@@ -31,13 +31,42 @@ $ pnpm add github:wx-98/DSH-GIT      # 临时目录
 安装后的包内容核对：`dsh.bundle.patch = ./cordis.patch.yml`、`dsh.client.platform = web`、
 `cordis.patch.yml` 行名 = `dsh-git-control`、`client.js` 的 bundle id 一致。
 
-## 3. awesome-dsh-plugin 投稿（已备好，待仓库满 1 天）
+## 3. npm（已完成）
+
+| 项 | 值 |
+|---|---|
+| 包名 | `dsh-git-control`（无 scope；`dsh-git` 等近似名已被占） |
+| 版本 | `0.4.0`（首发） |
+| 发布源 | `https://registry.npmjs.org/`（本机默认源是内网 `registry.npm.wps.cn`，发布时显式指定公共源） |
+| tarball | https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.0.tgz |
+| 账号 | `moonfiremoon` |
+
+复核：
+
+```bash
+npm view dsh-git-control version dist.tarball repository.url license
+# 0.4.0 / https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.0.tgz
+# git+https://github.com/wx-98/DSH-GIT.git / MIT
+```
+
+安装冒烟（两条都通过）：
+
+1. 普通包安装：临时目录 `pnpm add dsh-git-control --registry https://registry.npmjs.org/` → 包内 `dsh.bundle`、loader 行名、bundle id 均正确；
+2. **DSH 真实安装**：web profile 改为从 npm 安装 `dsh-git-control@0.4.0`，启动独立实例后 `tools/verify-installed.mjs` **26/26 通过**。
+
+> 运维注意：`dsh plugin --profile <p> add <pkg>` 只登记依赖；profile 的 `dsh.profile.bundles` 必须包含该 bundle 名才会被组合（GUI 的插件页会做这一步，手工 pnpm 安装后要自己补）。
+
+## 4. GitHub Release
+
+https://github.com/wx-98/DSH-GIT/releases/tag/v0.4.0
+
+## 5. awesome-dsh-plugin 投稿（已备好，待仓库满 1 天）
 
 - 规则：PR 只新增 `data/plugins/<owner>__<repo>.yml`，不手改生成的 README；仓库需声明 `dsh.bundle`、带 `dsh-plugin` topic、**满 1 天**。
 - 已 fork：`wx-98/awesome-dsh-plugin`；分支 `add-dsh-git`；文件 `data/plugins/wx-98__DSH-GIT.yml`（`category: git`）。
 - 门禁：目标仓库创建于 `2026-11-04T13:01:11Z`，**最早 2026-11-05T13:01Z（北京时间 21:01）** 才能开 PR。
 
-## 4. dshplugin.world 提交（已完成）
+## 6. dshplugin.world 提交（已完成）
 
 | 动作 | 链接 |
 |---|---|
@@ -46,7 +75,7 @@ $ pnpm add github:wx-98/DSH-GIT      # 临时目录
 
 README checklist（公开仓库 / `dsh-plugin` topic / 一句话职责 + `dsh plugin --profile …` 安装命令 + 插件类型声明）已逐条满足。
 
-## 5. npm（阻塞中）
+
 
 - 包名：`dsh-git-control`（npmjs 上未占用，已验证 404）。
 - 当前 npm 账号：`moonfiremoon`；对 `@wx-98` 组织的成员查询返回 403（非成员），因此该 scope 的发布权限未确认。

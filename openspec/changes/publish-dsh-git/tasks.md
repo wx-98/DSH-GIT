@@ -16,9 +16,9 @@
 
 ## 3. npm 发布
 
-- [ ] 3.1 确认 npm 凭据可用且指向公共源（`npm whoami --registry https://registry.npmjs.org/`）；若未登录，说明需要用户提供 `NPM_TOKEN` 或执行 `npm login` 后停止。验证：命令输出用户名而不是 ENEEDAUTH。
-- [ ] 3.2 发布前检查版本与名称未被占用（`npm view <pkg>@<version>` 应 404），执行 `npm publish --registry https://registry.npmjs.org/`；验证：发布成功且输出 tarball URL。
-- [ ] 3.3 发布后校验并做安装冒烟：`npm view <pkg> version dist.tarball repository.url`；在临时 profile 里执行 `dsh plugin --profile <tmp> add <pkg>` 并 `openspec` 外的等价自检（至少确认包被 pnpm 安装且 `package.json#dsh.bundle` 可解析）。验证：两条命令均成功，记录输出。
+- [x] 3.1 确认 npm 凭据可用且指向公共源（`npm whoami --registry https://registry.npmjs.org/`）；若未登录，说明需要用户提供 `NPM_TOKEN` 或执行 `npm login` 后停止。验证：命令输出用户名而不是 ENEEDAUTH。
+- [x] 3.2 发布前检查版本与名称未被占用（`npm view <pkg>@<version>` 应 404），执行 `npm publish --registry https://registry.npmjs.org/`；验证：发布成功且输出 tarball URL。
+- [x] 3.3 发布后校验并做安装冒烟：`npm view <pkg> version dist.tarball repository.url`；在临时 profile 里执行 `dsh plugin --profile <tmp> add <pkg>` 并 `openspec` 外的等价自检（至少确认包被 pnpm 安装且 `package.json#dsh.bundle` 可解析）。验证：两条命令均成功，记录输出。
 
 ## 4. awesome-dsh-plugin 收录 PR
 
@@ -36,7 +36,7 @@
 
 - [ ] 6.1 汇总一次可复现的发布验收：`git ls-remote` 的 main/tag、GitHub topics、`npm view` 三个字段、awesome PR URL、registry issue URL 全部记录到 `docs/verification.md` 新的「发布记录」小节。验证：小节中的每条命令都能被重跑复核。
 - [ ] 6.2 在 README 顶部加 awesome 徽章（`[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)`），并在安装块下方注明「npm 包名 / GitHub 仓库 / 注册表收录状态」；验证：徽章链接可达，README 渲染无坏链。
-- [ ] 6.3 跑完全量测试与 `openspec validate publish-dsh-git`，确认改名/元数据改动没有破坏插件行为；验证：`node --test test/host.test.js test/client.test.js test/graph-lanes.test.js` 全绿且校验通过。
+- [x] 6.3 跑完全量测试与 `openspec validate publish-dsh-git`，确认改名/元数据改动没有破坏插件行为；验证：`node --test test/host.test.js test/client.test.js test/graph-lanes.test.js` 全绿且校验通过。
 
 ## Workflow follow-up
 

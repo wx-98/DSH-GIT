@@ -248,3 +248,24 @@ $ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."
 - 日期过滤按**本地时区**解释；`until` 由客户端归一化为当天 23:59:59（git 的 date-only 语义取当前时钟，不能直接依赖）。
 - 列表不做虚拟滚动（每页 50 条）。
 - 网络操作、冲突解决、rebase、blame、并排 diff 仍不在范围内。
+
+## 10. 发布验收（publish-dsh-git）
+
+完整记录见 [publish-record.md](publish-record.md)。可复现的核心命令：
+
+```bash
+git ls-remote --heads --tags https://github.com/wx-98/DSH-GIT.git
+curl -s https://api.github.com/repos/wx-98/DSH-GIT/topics
+npm view dsh-git-control version dist.tarball repository.url license
+node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."   # 对从 npm 安装后的实例
+```
+
+| 项 | 结果 |
+|---|---|
+| GitHub 仓库 / tag / topics / MIT | https://github.com/wx-98/DSH-GIT · `v0.4.0` · `dsh-plugin` 等 4 个 · MIT |
+| GitHub Release | https://github.com/wx-98/DSH-GIT/releases/tag/v0.4.0 |
+| npm 包 | `dsh-git-control@0.4.0`（公共源） |
+| npm 安装后的真实实例自检 | 26/26 通过 |
+| dshplugin.world 收录 issue | https://github.com/wx-98/DSH-GIT/issues/1 |
+| 官方 discussions（Show Your Plugins!） | https://github.com/deepseek-ai/deepseek-harness/discussions/12165 |
+| awesome-dsh-plugin PR | 待仓库满 1 天（2026-11-05T13:01Z 之后） |

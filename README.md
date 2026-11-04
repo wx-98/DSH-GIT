@@ -28,6 +28,12 @@
 插件是一个**双面 bundle**：Host 半边（`index.js`）在 DSH 进程内注册 `/git/*` HTTP 路由并调用本机 `git` CLI；
 浏览器半边（`client.js`）在右侧栏注册 `git` 标签类型。无构建步骤、无运行时依赖。
 
+## 发布状态
+
+- npm：**`dsh-git-control@0.4.0`** — https://www.npmjs.com/package/dsh-git-control
+- GitHub：https://github.com/wx-98/DSH-GIT （tag `v0.4.0`，MIT）
+- dshplugin.world 收录申请：https://github.com/wx-98/DSH-GIT/issues/1
+- awesome-dsh-plugin：投稿准备中（列表要求仓库满 1 天）
 ## 安装
 
 > 插件类型：**Cordis 插件 bundle**（Host 半边 + 浏览器半边，不是皮肤 / TUI / 桌面客户端）。
