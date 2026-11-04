@@ -270,26 +270,33 @@ const byPath = (entries) => [...entries].sort((left, right) => left.path.localeC
 // Registration
 // ---------------------------------------------------------------------------
 
-test("apply registers ten unique exact routes and the /git fallback", async (t) => {
+test("apply registers fourteen unique exact routes and the /git fallback", async (t) => {
   const harness = await createHarness(t);
   const exact = harness.registrations.filter((route) => route.kind === "exact");
-  assert.equal(exact.length, 10);
+  assert.equal(exact.length, 14);
   assert.deepEqual(exact.map((route) => route.path).sort(), [
+    "/git/amend",
+    "/git/apply-hunk",
     "/git/branches",
     "/git/checkout",
     "/git/commit",
     "/git/diff",
+    "/git/discard",
     "/git/health",
     "/git/log",
     "/git/stage",
+    "/git/stash",
+    "/git/stats",
     "/git/status",
     "/git/unstage",
-    "/git/discard",
   ].sort());
   // Composition rule: every (kind, path) pair is registered exactly once, so
-  // GET and POST /git/commit share a single registration.
+  // the read and write forms of commit/branches/stash share one registration
+  // each (contract 1.5: the GET and POST handlers dispatch on req.method).
   assert.equal(new Set(harness.registrationKeys).size, harness.registrationKeys.length);
-  assert.equal(harness.registrationKeys.filter((key) => key === "exact /git/commit").length, 1);
+  for (const shared of ["/git/commit", "/git/branches", "/git/stash"]) {
+    assert.equal(harness.registrationKeys.filter((key) => key === "exact " + shared).length, 1);
+  }
   for (const route of harness.registrations) {
     assert.equal(typeof route.handler, "function");
   }
@@ -297,9 +304,14 @@ test("apply registers ten unique exact routes and the /git fallback", async (t) 
     harness.registrations.filter((route) => route.kind === "prefix").map((route) => route.path),
     ["/git"],
   );
-  assert.equal(harness.effects.length, 11);
+  assert.equal(harness.effects.length, 15);
   assert.ok(harness.effects.includes("git: GET /git/status"));
+  assert.ok(harness.effects.includes("git: GET /git/stats"));
   assert.ok(harness.effects.includes("git: GET+POST /git/commit"));
+  assert.ok(harness.effects.includes("git: GET+POST /git/branches"));
+  assert.ok(harness.effects.includes("git: GET+POST /git/stash"));
+  assert.ok(harness.effects.includes("git: POST /git/apply-hunk"));
+  assert.ok(harness.effects.includes("git: POST /git/amend"));
   assert.ok(harness.effects.includes("git: fallback"));
 });
 
@@ -1128,4 +1140,639 @@ test("buildUntrackedDiff synthesises one /dev/null hunk or a binary marker", () 
   const binary = buildUntrackedDiff(Buffer.from([0x00, 0x01, 0x02]), "blob.bin");
   assert.equal(binary.binary, true);
   assert.deepEqual(binary.hunks, []);
+});
+// ---------------------------------------------------------------------------
+// stats (contract 1.5 GET /git/stats)
+// ---------------------------------------------------------------------------
+
+test("GET /git/stats reports counters for modified, added, deleted and binary files", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const statsUrl = "/git/stats" + qs({ root: repo });
+
+  let body = (await getJson(harness.base, statsUrl)).json;
+  assert.deepEqual(body, { ok: true, staged: {}, unstaged: {} });
+
+  // An unstaged modification: one deletion plus two additions.
+  await writeFiles(repo, { "src/a.txt": "line1\nline2 changed\nline3\nline4\n" });
+  body = (await getJson(harness.base, statsUrl)).json;
+  assert.deepEqual(body.unstaged, { "src/a.txt": { additions: 2, deletions: 1, binary: false } });
+  assert.deepEqual(body.staged, {});
+
+  // A staged deletion, a staged addition and a staged binary file.
+  await gitRun(repo, ["rm", "src/b.txt"]);
+  await writeFiles(repo, { "docs/new.md": "alpha\nbeta\ngamma\n" });
+  await gitRun(repo, ["add", "docs/new.md"]);
+  await fs.writeFile(path.join(repo, "asset.bin"), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+  await gitRun(repo, ["add", "asset.bin"]);
+  body = (await getJson(harness.base, statsUrl)).json;
+  assert.deepEqual(body.staged, {
+    "asset.bin": { additions: null, deletions: null, binary: true },
+    "docs/new.md": { additions: 3, deletions: 0, binary: false },
+    "src/b.txt": { additions: 0, deletions: 1, binary: false },
+  });
+  assert.deepEqual(body.unstaged, { "src/a.txt": { additions: 2, deletions: 1, binary: false } });
+
+  // Untracked files appear in neither map (contract 1.5).
+  await writeFiles(repo, { "notes.md": "# notes\n" });
+  body = (await getJson(harness.base, statsUrl)).json;
+  assert.equal(Object.prototype.hasOwnProperty.call(body.staged, "notes.md"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(body.unstaged, "notes.md"), false);
+});
+
+// ---------------------------------------------------------------------------
+// hunk level staging (contract 1.5 POST /git/apply-hunk)
+// ---------------------------------------------------------------------------
+
+/** Twelve committed lines used by the hunk level tests. */
+const LONG_FILE_LINES = Array.from({ length: 12 }, (_unused, index) => "line" + (index + 1)).join("\n") + "\n";
+
+/** The same file with line 1 and line 12 rewritten: two disjoint hunks. */
+const LONG_FILE_CHANGED =
+  ["LINE1 changed", ...Array.from({ length: 10 }, (_unused, index) => "line" + (index + 2)), "LINE12 changed"].join("\n") +
+  "\n";
+
+/**
+ * Rebuild one single hunk patch exactly the way the client does (design D4).
+ *
+ * @param {string} relativePath repository relative path
+ * @param {Array<object> | object} hunks one hunk or a list of hunks
+ * @returns {string}
+ */
+function buildHunkPatch(relativePath, hunks) {
+  const list = Array.isArray(hunks) ? hunks : [hunks];
+  const body = [];
+  for (const hunk of list) {
+    body.push(hunk.header);
+    for (const line of hunk.lines) {
+      const prefix = line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
+      body.push(prefix + line.text);
+    }
+  }
+  return (
+    "diff --git a/" + relativePath + " b/" + relativePath + "\n" +
+    "--- a/" + relativePath + "\n" +
+    "+++ b/" + relativePath + "\n" +
+    body.join("\n") + "\n"
+  );
+}
+
+test("POST /git/apply-hunk stages only the selected hunk", async (t) => {
+  const repo = await createRepoWithCommit(t, { "f.txt": LONG_FILE_LINES });
+  const harness = await createHarness(t);
+  const diffUrl = (mode) => "/git/diff" + qs({ root: repo, path: "f.txt", mode });
+
+  await writeFiles(repo, { "f.txt": LONG_FILE_CHANGED });
+  const worktree = (await getJson(harness.base, diffUrl("worktree"))).json;
+  assert.equal(worktree.hunks.length, 2);
+
+  const staged = await postJson(harness.base, "/git/apply-hunk", {
+    root: repo,
+    path: "f.txt",
+    direction: "stage",
+    patch: buildHunkPatch("f.txt", worktree.hunks[0]),
+  });
+  assert.equal(staged.status, 200);
+  assert.deepEqual(staged.json, { ok: true });
+
+  // Only the first hunk reached the index ...
+  const stagedDiff = (await getJson(harness.base, diffUrl("staged"))).json;
+  assert.equal(stagedDiff.hunks.length, 1);
+  assert.equal(stagedDiff.hunks[0].oldStart, 1);
+  assert.equal(stagedDiff.additions, 1);
+  assert.equal(stagedDiff.deletions, 1);
+  // ... and the other hunk is still a work tree change.
+  const remaining = (await getJson(harness.base, diffUrl("worktree"))).json;
+  assert.equal(remaining.hunks.length, 1);
+  assert.equal(remaining.hunks[0].oldStart, 9);
+
+  const status = (await getJson(harness.base, "/git/status" + qs({ root: repo }))).json;
+  assert.deepEqual(byPath(status.staged), [{ path: "f.txt", origPath: null, status: "M" }]);
+  assert.deepEqual(byPath(status.unstaged), [{ path: "f.txt", origPath: null, status: "M" }]);
+});
+
+test("POST /git/apply-hunk unstages only the selected hunk", async (t) => {
+  const repo = await createRepoWithCommit(t, { "f.txt": LONG_FILE_LINES });
+  const harness = await createHarness(t);
+  const diffUrl = (mode) => "/git/diff" + qs({ root: repo, path: "f.txt", mode });
+
+  await writeFiles(repo, { "f.txt": LONG_FILE_CHANGED });
+  await gitRun(repo, ["add", "f.txt"]);
+  const stagedDiff = (await getJson(harness.base, diffUrl("staged"))).json;
+  assert.equal(stagedDiff.hunks.length, 2);
+
+  const response = await postJson(harness.base, "/git/apply-hunk", {
+    root: repo,
+    path: "f.txt",
+    direction: "unstage",
+    patch: buildHunkPatch("f.txt", stagedDiff.hunks[0]),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json, { ok: true });
+
+  const afterStaged = (await getJson(harness.base, diffUrl("staged"))).json;
+  assert.equal(afterStaged.hunks.length, 1);
+  assert.equal(afterStaged.hunks[0].oldStart, 9);
+  const afterWorktree = (await getJson(harness.base, diffUrl("worktree"))).json;
+  assert.equal(afterWorktree.hunks.length, 1);
+  assert.equal(afterWorktree.hunks[0].oldStart, 1);
+});
+
+test("POST /git/apply-hunk rejects multi-hunk, foreign-path and malformed patches with 400", async (t) => {
+  const repo = await createRepoWithCommit(t, { "f.txt": LONG_FILE_LINES });
+  const harness = await createHarness(t);
+  await writeFiles(repo, { "f.txt": LONG_FILE_CHANGED });
+  const worktree = (await getJson(harness.base, "/git/diff" + qs({ root: repo, path: "f.txt", mode: "worktree" }))).json;
+  assert.equal(worktree.hunks.length, 2);
+  const post = (body) => postJson(harness.base, "/git/apply-hunk", Object.assign({ root: repo }, body));
+
+  const multi = await post({ path: "f.txt", direction: "stage", patch: buildHunkPatch("f.txt", worktree.hunks) });
+  assert.equal(multi.status, 400);
+  assert.equal(multi.json.code, "bad-request");
+  assert.match(multi.json.message, /exactly one hunk/);
+
+  const foreign = await post({ path: "f.txt", direction: "stage", patch: buildHunkPatch("src/a.txt", worktree.hunks[0]) });
+  assert.equal(foreign.status, 400);
+  assert.equal(foreign.json.code, "bad-request");
+
+  const headerless = await post({
+    path: "f.txt",
+    direction: "stage",
+    patch: "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n",
+  });
+  assert.equal(headerless.status, 400);
+  assert.equal(headerless.json.code, "bad-request");
+
+  const badDirection = await post({
+    path: "f.txt",
+    direction: "sideways",
+    patch: buildHunkPatch("f.txt", worktree.hunks[0]),
+  });
+  assert.equal(badDirection.status, 400);
+  assert.equal(badDirection.json.code, "bad-request");
+
+  const missingPatch = await post({ path: "f.txt", direction: "stage" });
+  assert.equal(missingPatch.status, 400);
+  assert.equal(missingPatch.json.code, "bad-request");
+
+  const escaping = await post({ path: "../outside.txt", direction: "stage", patch: "x" });
+  assert.equal(escaping.status, 400);
+  assert.equal(escaping.json.code, "invalid-path");
+
+  const absolute = await post({ path: path.join(repo, "f.txt"), direction: "stage", patch: "x" });
+  assert.equal(absolute.status, 400);
+  assert.equal(absolute.json.code, "invalid-path");
+
+  // None of the rejected requests touched the index.
+  const status = (await getJson(harness.base, "/git/status" + qs({ root: repo }))).json;
+  assert.deepEqual(status.staged, []);
+});
+
+test("POST /git/apply-hunk maps a stale patch to 409 and leaves the index untouched", async (t) => {
+  const repo = await createRepoWithCommit(t, { "f.txt": LONG_FILE_LINES });
+  const harness = await createHarness(t);
+  const statsUrl = "/git/stats" + qs({ root: repo });
+  await writeFiles(repo, { "f.txt": LONG_FILE_CHANGED });
+  const worktree = (await getJson(harness.base, "/git/diff" + qs({ root: repo, path: "f.txt", mode: "worktree" }))).json;
+  const patch = buildHunkPatch("f.txt", worktree.hunks[0]);
+
+  const first = await postJson(harness.base, "/git/apply-hunk", { root: repo, path: "f.txt", direction: "stage", patch });
+  assert.equal(first.status, 200);
+  const before = (await getJson(harness.base, statsUrl)).json;
+  assert.deepEqual(before.staged, { "f.txt": { additions: 1, deletions: 1, binary: false } });
+
+  // Replaying the same hunk cannot apply a second time.
+  const replay = await postJson(harness.base, "/git/apply-hunk", { root: repo, path: "f.txt", direction: "stage", patch });
+  assert.equal(replay.status, 409);
+  assert.equal(replay.json.code, "conflict");
+  assert.equal(typeof replay.json.message, "string");
+  assert.ok(replay.json.message.length > 0, "conflict must carry a git summary");
+  assert.deepEqual((await getJson(harness.base, statsUrl)).json, before);
+
+  // A patch whose context no longer matches the index fails the same way.
+  const staleHunk = {
+    header: worktree.hunks[1].header,
+    lines: worktree.hunks[1].lines.map((line) =>
+      line.type === "context" ? Object.assign({}, line, { text: "tampered context line" }) : line,
+    ),
+  };
+  const stale = await postJson(harness.base, "/git/apply-hunk", {
+    root: repo,
+    path: "f.txt",
+    direction: "stage",
+    patch: buildHunkPatch("f.txt", staleHunk),
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json.code, "conflict");
+  assert.deepEqual((await getJson(harness.base, statsUrl)).json, before);
+});
+
+test("POST /git/apply-hunk rejects bodies over 1 MiB with 413", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+
+  const oversized = await postJson(harness.base, "/git/apply-hunk", {
+    root: repo,
+    path: "src/a.txt",
+    direction: "stage",
+    patch: "x".repeat(1024 * 1024 + 64),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(oversized.json.ok, false);
+
+  // Every other write route keeps the 64 KiB cap (contract 1.2 and 1.5).
+  const tooBig = await postJson(harness.base, "/git/checkout", {
+    root: repo,
+    branch: "x".repeat(64 * 1024 + 64),
+  });
+  assert.equal(tooBig.status, 413);
+});
+
+// ---------------------------------------------------------------------------
+// amend (contract 1.5 POST /git/amend)
+// ---------------------------------------------------------------------------
+
+test("POST /git/amend rewrites the last commit without adding one", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const beforeSha = (await gitRun(repo, ["rev-parse", "HEAD"])).trim();
+  const beforeCount = (await gitRun(repo, ["rev-list", "--count", "HEAD"])).trim();
+  const beforeAuthor = (await gitRun(repo, ["show", "-s", "--format=%an", "HEAD"])).trim();
+
+  // Amend folds staged content into the rewritten commit.
+  await writeFiles(repo, { "extra.txt": "extra\n" });
+  await gitRun(repo, ["add", "-A"]);
+
+  const amended = await postJson(harness.base, "/git/amend", { root: repo, message: "chore: initial commit (amended)" });
+  assert.equal(amended.status, 200);
+  assert.equal(amended.json.ok, true);
+  assert.match(amended.json.sha, /^[0-9a-f]{40}$/);
+  assert.equal(amended.json.shortSha, amended.json.sha.slice(0, 7));
+  assert.notEqual(amended.json.sha, beforeSha);
+  assert.equal((await gitRun(repo, ["rev-list", "--count", "HEAD"])).trim(), beforeCount);
+  assert.equal((await gitRun(repo, ["show", "-s", "--format=%s", "HEAD"])).trim(), "chore: initial commit (amended)");
+  assert.equal((await gitRun(repo, ["show", "-s", "--format=%an", "HEAD"])).trim(), beforeAuthor);
+
+  const detail = (await getJson(harness.base, "/git/commit" + qs({ root: repo, sha: amended.json.sha }))).json;
+  assert.ok(detail.files.some((entry) => entry.path === "extra.txt"));
+  const status = (await getJson(harness.base, "/git/status" + qs({ root: repo }))).json;
+  assert.deepEqual(status.counts, { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+  assert.equal(status.branch.sha, amended.json.sha);
+});
+
+test("POST /git/amend rejects an empty message and a repository without HEAD", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+
+  const blank = await postJson(harness.base, "/git/amend", { root: repo, message: "   \n\t" });
+  assert.equal(blank.status, 400);
+  assert.equal(blank.json.code, "bad-request");
+  const missing = await postJson(harness.base, "/git/amend", { root: repo });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.json.code, "bad-request");
+
+  const empty = await createTempDir(t, "dsh-git-amend-empty-");
+  await initRepo(empty);
+  const noHead = await postJson(harness.base, "/git/amend", { root: empty, message: "chore: nothing to amend" });
+  assert.equal(noHead.status, 409);
+  assert.equal(noHead.json.code, "conflict");
+});
+
+// ---------------------------------------------------------------------------
+// branches (contract 1.5 POST /git/branches)
+// ---------------------------------------------------------------------------
+
+test("POST /git/branches creates and renames branches", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const branchesUrl = "/git/branches" + qs({ root: repo });
+
+  const created = await postJson(harness.base, "/git/branches", { root: repo, action: "create", name: "feature/x" });
+  assert.equal(created.status, 200);
+  assert.deepEqual(created.json, { ok: true, name: "feature/x" });
+  assert.equal((await gitRun(repo, ["symbolic-ref", "--short", "HEAD"])).trim(), "feature/x");
+  let branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.equal(branches.current, "feature/x");
+  assert.deepEqual(branches.local.map((entry) => entry.name).sort(), ["feature/x", "main"]);
+
+  const renamed = await postJson(harness.base, "/git/branches", {
+    root: repo,
+    action: "rename",
+    name: "feature/x",
+    newName: "feature/y",
+  });
+  assert.equal(renamed.status, 200);
+  assert.deepEqual(renamed.json, { ok: true, name: "feature/y" });
+  branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name).sort(), ["feature/y", "main"]);
+  assert.equal(branches.current, "feature/y");
+
+  // Renaming onto an existing branch is reported as a git failure.
+  const clash = await postJson(harness.base, "/git/branches", {
+    root: repo,
+    action: "rename",
+    name: "feature/y",
+    newName: "main",
+  });
+  assert.equal(clash.status, 422);
+  assert.equal(clash.json.code, "git-failed");
+});
+
+test("POST /git/branches deletes branches, refuses the current one and needs force for unmerged work", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const branchesUrl = "/git/branches" + qs({ root: repo });
+
+  // A merged branch deletes with the safe "-d".
+  await postJson(harness.base, "/git/branches", { root: repo, action: "create", name: "topic" });
+  await postJson(harness.base, "/git/checkout", { root: repo, branch: "main" });
+  const deleted = await postJson(harness.base, "/git/branches", { root: repo, action: "delete", name: "topic" });
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(deleted.json, { ok: true, name: "topic" });
+  let branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name), ["main"]);
+
+  // Deleting the checked out branch is a conflict, and the branch survives.
+  const current = await postJson(harness.base, "/git/branches", { root: repo, action: "delete", name: "main" });
+  assert.equal(current.status, 409);
+  assert.equal(current.json.code, "conflict");
+  branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name), ["main"]);
+
+  // An unmerged branch needs the explicit force flag.
+  await postJson(harness.base, "/git/branches", { root: repo, action: "create", name: "unmerged" });
+  await writeFiles(repo, { "unmerged.txt": "work\n" });
+  const committed = await postJson(harness.base, "/git/commit", {
+    root: repo,
+    message: "feat: unmerged work",
+    all: true,
+  });
+  assert.equal(committed.status, 200);
+  await postJson(harness.base, "/git/checkout", { root: repo, branch: "main" });
+
+  const refused = await postJson(harness.base, "/git/branches", { root: repo, action: "delete", name: "unmerged" });
+  assert.equal(refused.status, 422);
+  assert.equal(refused.json.code, "git-failed");
+  assert.match(refused.json.message, /not fully merged/);
+  branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name).sort(), ["main", "unmerged"]);
+
+  const forced = await postJson(harness.base, "/git/branches", {
+    root: repo,
+    action: "delete",
+    name: "unmerged",
+    force: true,
+  });
+  assert.equal(forced.status, 200);
+  assert.deepEqual(forced.json, { ok: true, name: "unmerged" });
+  branches = (await getJson(harness.base, branchesUrl)).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name), ["main"]);
+});
+
+test("POST /git/branches validates the action and the branch name", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const post = (body) => postJson(harness.base, "/git/branches", Object.assign({ root: repo }, body));
+
+  const bodies = [
+    { action: "explode", name: "x" },
+    { action: "create", name: "" },
+    { action: "create", name: "   " },
+    { action: "create", name: "has space" },
+    { action: "create", name: "-leading-dash" },
+    { action: "create", name: "nul\u0000name" },
+    { action: "rename", name: "main" },
+    { action: "delete", name: 42 },
+  ];
+  for (const body of bodies) {
+    const response = await post(body);
+    assert.equal(response.status, 400, "expected 400 for " + JSON.stringify(body));
+    assert.equal(response.json.code, "bad-request");
+  }
+
+  const branches = (await getJson(harness.base, "/git/branches" + qs({ root: repo }))).json;
+  assert.deepEqual(branches.local.map((entry) => entry.name), ["main"]);
+});
+
+// ---------------------------------------------------------------------------
+// stash (contract 1.5 GET/POST /git/stash)
+// ---------------------------------------------------------------------------
+
+test("POST /git/stash supports create, list, apply, pop and drop", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const stashUrl = "/git/stash" + qs({ root: repo });
+  const post = (body) => postJson(harness.base, "/git/stash", Object.assign({ root: repo }, body));
+
+  let body = (await getJson(harness.base, stashUrl)).json;
+  assert.deepEqual(body, { ok: true, entries: [] });
+
+  await writeFiles(repo, { "src/a.txt": "line1\nstashed line2\nline3\n" });
+  const created = await post({ action: "create", message: "wip one" });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.ok, true);
+  assert.equal(created.json.entries.length, 1);
+  const entry = created.json.entries[0];
+  assert.equal(entry.index, 0);
+  assert.equal(entry.ref, "stash@{0}");
+  assert.match(entry.message, /wip one/);
+  assert.match(entry.date, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?$/);
+
+  // Creating the stash cleaned the work tree.
+  let status = (await getJson(harness.base, "/git/status" + qs({ root: repo }))).json;
+  assert.deepEqual(status.counts, { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+  assert.deepEqual((await getJson(harness.base, stashUrl)).json.entries, created.json.entries);
+
+  // apply restores the change and keeps the entry.
+  const applied = await post({ action: "apply", index: 0 });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.json.entries.length, 1);
+  assert.equal(await fs.readFile(path.join(repo, "src", "a.txt"), "utf8"), "line1\nstashed line2\nline3\n");
+
+  // pop restores the change and drops the entry.
+  await gitRun(repo, ["checkout", "--", "src/a.txt"]);
+  const popped = await post({ action: "pop", index: 0 });
+  assert.equal(popped.status, 200);
+  assert.deepEqual(popped.json.entries, []);
+  assert.equal(await fs.readFile(path.join(repo, "src", "a.txt"), "utf8"), "line1\nstashed line2\nline3\n");
+  assert.deepEqual((await getJson(harness.base, stashUrl)).json.entries, []);
+
+  // drop is destructive and therefore needs confirm: true.
+  await gitRun(repo, ["checkout", "--", "src/a.txt"]);
+  await writeFiles(repo, { "src/b.txt": "beta changed\n" });
+  const second = await post({ action: "create", message: "wip two" });
+  assert.equal(second.json.entries.length, 1);
+  assert.match(second.json.entries[0].message, /wip two/);
+  const noConfirm = await post({ action: "drop", index: 0 });
+  assert.equal(noConfirm.status, 400);
+  assert.equal(noConfirm.json.code, "bad-request");
+  assert.equal((await getJson(harness.base, stashUrl)).json.entries.length, 1);
+  const dropped = await post({ action: "drop", index: 0, confirm: true });
+  assert.equal(dropped.status, 200);
+  assert.deepEqual(dropped.json, { ok: true, entries: [] });
+
+  // Invalid action and invalid index are reported as bad-request / not-found.
+  const badAction = await post({ action: "explode" });
+  assert.equal(badAction.status, 400);
+  assert.equal(badAction.json.code, "bad-request");
+  const badIndex = await post({ action: "apply", index: 9 });
+  assert.equal(badIndex.status, 404);
+  assert.equal(badIndex.json.code, "not-found");
+});
+
+test("a conflicting stash pop is a 409 and keeps the entry", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const stashUrl = "/git/stash" + qs({ root: repo });
+  const post = (body) => postJson(harness.base, "/git/stash", Object.assign({ root: repo }, body));
+
+  await writeFiles(repo, { "src/a.txt": "line1\nstash version\nline3\n" });
+  const created = await post({ action: "create", message: "wip conflict" });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.entries.length, 1);
+
+  await writeFiles(repo, { "src/a.txt": "line1\nworktree version\nline3\n" });
+  const conflict = await post({ action: "pop", index: 0 });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json.code, "conflict");
+  assert.equal(typeof conflict.json.message, "string");
+  assert.ok(conflict.json.message.length > 0, "conflict must carry a git summary");
+
+  // The stash survives and the work tree edit is untouched.
+  const entries = (await getJson(harness.base, stashUrl)).json.entries;
+  assert.equal(entries.length, 1);
+  assert.match(entries[0].message, /wip conflict/);
+  assert.equal(await fs.readFile(path.join(repo, "src", "a.txt"), "utf8"), "line1\nworktree version\nline3\n");
+});
+
+// ---------------------------------------------------------------------------
+// log filters (contract 1.5)
+// ---------------------------------------------------------------------------
+
+test("GET /git/log filters by grep, author and path", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const page = async (params) =>
+    (await getJson(harness.base, "/git/log" + qs(Object.assign({ root: repo }, params)))).json;
+
+  await writeFiles(repo, { "docs/alpha.md": "alpha\n" });
+  await gitRun(repo, ["add", "-A"]);
+  await gitRun(repo, ["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-m", "feat: alpha docs"]);
+  await writeFiles(repo, { "src/beta.txt": "beta\n" });
+  await gitRun(repo, ["add", "-A"]);
+  await gitRun(repo, ["-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-m", "fix: beta file"]);
+  await writeFiles(repo, { "docs/gamma.md": "gamma\n" });
+  await gitRun(repo, ["add", "-A"]);
+  await gitRun(repo, ["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-m", "chore: gamma docs"]);
+
+  const grep = await page({ grep: "beta" });
+  assert.deepEqual(grep.commits.map((commit) => commit.subject), ["fix: beta file"]);
+  assert.equal(grep.hasMore, false);
+
+  const author = await page({ author: "Alice" });
+  assert.deepEqual(author.commits.map((commit) => commit.subject), ["chore: gamma docs", "feat: alpha docs"]);
+
+  const docsPath = await page({ path: "docs" });
+  assert.deepEqual(docsPath.commits.map((commit) => commit.subject), ["chore: gamma docs", "feat: alpha docs"]);
+
+  const filePath = await page({ path: "src/beta.txt" });
+  assert.deepEqual(filePath.commits.map((commit) => commit.subject), ["fix: beta file"]);
+});
+
+test("GET /git/log combines filters, keeps paging and returns an empty page on no match", async (t) => {
+  const repo = await createRepoWithCommit(t);
+  const harness = await createHarness(t);
+  const page = async (params) =>
+    (await getJson(harness.base, "/git/log" + qs(Object.assign({ root: repo }, params)))).json;
+
+  await writeFiles(repo, { "docs/alpha.md": "alpha\n" });
+  await gitRun(repo, ["add", "-A"]);
+  await gitRun(repo, ["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-m", "feat: alpha docs"]);
+  await writeFiles(repo, { "docs/gamma.md": "gamma\n" });
+  await gitRun(repo, ["add", "-A"]);
+  await gitRun(repo, ["-c", "user.name=Alice", "-c", "user.email=alice@example.com", "commit", "-m", "chore: gamma docs"]);
+
+  const combined = await page({ grep: "docs", author: "Alice", path: "docs" });
+  assert.deepEqual(combined.commits.map((commit) => commit.subject), ["chore: gamma docs", "feat: alpha docs"]);
+  assert.equal(combined.ref, "HEAD");
+
+  // Paging still applies on top of the filters.
+  const firstPage = await page({ author: "Alice", limit: 1 });
+  assert.deepEqual(firstPage.commits.map((commit) => commit.subject), ["chore: gamma docs"]);
+  assert.equal(firstPage.hasMore, true);
+  const secondPage = await page({ author: "Alice", limit: 1, skip: 1 });
+  assert.deepEqual(secondPage.commits.map((commit) => commit.subject), ["feat: alpha docs"]);
+  assert.equal(secondPage.hasMore, false);
+
+  // A filter matching nothing is an empty page, not an error.
+  const noMatch = await getJson(harness.base, "/git/log" + qs({ root: repo, grep: "no-such-commit-text" }));
+  assert.equal(noMatch.status, 200);
+  assert.deepEqual(noMatch.json, { ok: true, ref: "HEAD", hasMore: false, commits: [] });
+
+  // Escaping and empty filter values are rejected.
+  const escaping = await getJson(harness.base, "/git/log" + qs({ root: repo, path: "../outside.txt" }));
+  assert.equal(escaping.status, 400);
+  assert.equal(escaping.json.code, "invalid-path");
+  const emptyGrep = await getJson(harness.base, "/git/log" + qs({ root: repo, grep: "" }));
+  assert.equal(emptyGrep.status, 400);
+  assert.equal(emptyGrep.json.code, "bad-request");
+});
+
+// ---------------------------------------------------------------------------
+// transport guards for the new routes (contract 1.5 + contract 1.4)
+// ---------------------------------------------------------------------------
+
+test("the connection fence also guards the routes added by git-idea-parity", async (t) => {
+  const forbidden = await createHarness(t, { requestRejection: () => 403 });
+  const calls = [
+    ["GET", "/git/stats" + qs({ root: "D:/does-not-matter" })],
+    ["GET", "/git/stash" + qs({ root: "D:/does-not-matter" })],
+    ["POST", "/git/stash"],
+    ["POST", "/git/branches"],
+    ["POST", "/git/amend"],
+    ["POST", "/git/apply-hunk"],
+  ];
+  for (const [method, pathname] of calls) {
+    const response = await request(forbidden.base, method, pathname, method === "POST" ? { body: {} } : {});
+    assert.equal(response.status, 403, "expected the fence to reject " + method + " " + pathname);
+    assert.equal(response.text, "");
+  }
+
+  const unauthenticated = await createHarness(t, { requestRejection: () => 401 });
+  const stats = await getJson(unauthenticated.base, "/git/stats" + qs({ root: "D:/does-not-matter" }));
+  assert.equal(stats.status, 401);
+  assert.equal(stats.text, "");
+});
+
+test("the new routes reject non repositories and unsupported methods", async (t) => {
+  const directory = await createTempDir(t, "dsh-git-norepo-");
+  const harness = await createHarness(t);
+
+  const stats = await getJson(harness.base, "/git/stats" + qs({ root: directory }));
+  assert.equal(stats.status, 409);
+  assert.equal(stats.json.code, "not-a-repo");
+  const stash = await getJson(harness.base, "/git/stash" + qs({ root: directory }));
+  assert.equal(stash.status, 409);
+  assert.equal(stash.json.code, "not-a-repo");
+  const amend = await postJson(harness.base, "/git/amend", { root: directory, message: "chore: x" });
+  assert.equal(amend.status, 409);
+  assert.equal(amend.json.code, "not-a-repo");
+  const branch = await postJson(harness.base, "/git/branches", { root: directory, action: "create", name: "x" });
+  assert.equal(branch.status, 409);
+  assert.equal(branch.json.code, "not-a-repo");
+  const hunk = await postJson(harness.base, "/git/apply-hunk", {
+    root: directory,
+    path: "a.txt",
+    direction: "stage",
+    patch: "x",
+  });
+  assert.equal(hunk.status, 409);
+  assert.equal(hunk.json.code, "not-a-repo");
+
+  // The shared registrations answer 405 with an Allow header.
+  for (const shared of ["/git/branches", "/git/stash"]) {
+    const put = await request(harness.base, "PUT", shared, { body: {} });
+    assert.equal(put.status, 405);
+    assert.equal(put.headers.get("allow"), "GET, POST");
+  }
 });

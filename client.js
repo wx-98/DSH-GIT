@@ -223,6 +223,197 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
+    // Presentation helpers: change tree, hunk patch and commit-message history
+    // -------------------------------------------------------------------------
+
+    /** Tree ordering: directories first, then files, each group by name. */
+    function compareTreeNodes(left, right) {
+      const leftDir = left.type === "dir";
+      const rightDir = right.type === "dir";
+      if (leftDir !== rightDir) return leftDir ? -1 : 1;
+      if (left.name === right.name) return 0;
+      return left.name < right.name ? -1 : 1;
+    }
+
+    /** Sort a node list in place (directories first) and recurse into directories. */
+    function sortTreeNodes(nodes) {
+      nodes.sort(compareTreeNodes);
+      for (let index = 0; index < nodes.length; index += 1) {
+        if (nodes[index].type === "dir") sortTreeNodes(nodes[index].children);
+      }
+      return nodes;
+    }
+
+    /**
+     * Group repository-relative status entries into a renderable directory tree.
+     * Directories come first, then files, each sorted by name; the input array and
+     * its entries are never modified.
+     */
+    function buildChangeTree(entries) {
+      const list = Array.isArray(entries) ? entries : [];
+      const roots = [];
+      const dirs = new Map();
+      for (let index = 0; index < list.length; index += 1) {
+        const entry = list[index];
+        if (entry === null || typeof entry !== "object") continue;
+        const raw = isNonEmptyString(entry.path) ? entry.path : "";
+        const normalised = raw.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+        if (normalised === "") continue;
+        const segments = normalised.split("/").filter(function (segment) { return segment.length > 0; });
+        if (segments.length === 0) continue;
+        let siblings = roots;
+        let prefix = "";
+        for (let depth = 0; depth < segments.length - 1; depth += 1) {
+          prefix = prefix === "" ? segments[depth] : prefix + "/" + segments[depth];
+          let dir = dirs.get(prefix);
+          if (dir === undefined) {
+            dir = { type: "dir", name: segments[depth], path: prefix, children: [] };
+            dirs.set(prefix, dir);
+            siblings.push(dir);
+          }
+          siblings = dir.children;
+        }
+        siblings.push({ type: "file", name: segments[segments.length - 1], path: normalised, entry: entry });
+      }
+      return sortTreeNodes(roots);
+    }
+
+    /** Depth-first list of every directory node in a tree. */
+    function collectTreeDirs(nodes, out) {
+      const list = Array.isArray(nodes) ? nodes : [];
+      const bucket = Array.isArray(out) ? out : [];
+      for (let index = 0; index < list.length; index += 1) {
+        const node = list[index];
+        if (node !== null && typeof node === "object" && node.type === "dir") {
+          bucket.push(node);
+          collectTreeDirs(node.children, bucket);
+        }
+      }
+      return bucket;
+    }
+
+    /** Total number of file rows below one directory node. */
+    function countTreeFiles(node) {
+      if (node === null || typeof node !== "object" || !Array.isArray(node.children)) return 0;
+      let total = 0;
+      for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        if (child === null || typeof child !== "object") continue;
+        total += child.type === "dir" ? countTreeFiles(child) : 1;
+      }
+      return total;
+    }
+
+    /** One hunk's unified-diff body, newline terminated. */
+    function hunkBodyText(hunk) {
+      const lines = hunk !== null && typeof hunk === "object" && Array.isArray(hunk.lines) ? hunk.lines : [];
+      let out = "";
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        const type = line !== null && typeof line === "object" ? line.type : "context";
+        const text = line !== null && typeof line === "object" && typeof line.text === "string" ? line.text : "";
+        out += (type === "add" ? "+" : type === "del" ? "-" : " ") + text + "\n";
+      }
+      return out;
+    }
+
+    /** Rebuild the single-hunk patch POST /git/apply-hunk accepts. */
+    function buildHunkPatch(path, hunk) {
+      const file = typeof path === "string" ? path.replace(/\\/g, "/").replace(/^\/+/, "") : "";
+      const header = hunk !== null && typeof hunk === "object" && isNonEmptyString(hunk.header) ? hunk.header : "@@";
+      return "diff --git a/" + file + " b/" + file + "\n"
+        + "--- a/" + file + "\n"
+        + "+++ b/" + file + "\n"
+        + header + "\n"
+        + hunkBodyText(hunk);
+    }
+
+    /** Sha of the commit carrying HEAD (fallback: the newest commit of the page). */
+    function headShaOf(commits) {
+      const list = Array.isArray(commits) ? commits : [];
+      for (let index = 0; index < list.length; index += 1) {
+        const commit = list[index];
+        if (commit === null || typeof commit !== "object") continue;
+        const refs = Array.isArray(commit.refs) ? commit.refs : [];
+        for (let refIndex = 0; refIndex < refs.length; refIndex += 1) {
+          const ref = refs[refIndex];
+          if (typeof ref === "string" && ref.indexOf("HEAD") === 0) {
+            return isNonEmptyString(commit.sha) ? commit.sha : "";
+          }
+        }
+      }
+      for (let index = 0; index < list.length; index += 1) {
+        const commit = list[index];
+        if (commit !== null && typeof commit === "object" && isNonEmptyString(commit.sha)) return commit.sha;
+      }
+      return "";
+    }
+
+    /** localStorage key and capacity of the recent commit-message list. */
+    const COMMIT_HISTORY_KEY = "dsh.git.commitMessages.v1";
+    const COMMIT_HISTORY_MAX = 10;
+
+    /** The browser's localStorage, or null when it is unavailable or throws. */
+    function commitStorage() {
+      try {
+        if (typeof localStorage === "undefined" || localStorage === null) return null;
+        return localStorage;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    /** Recent commit messages, newest first, at most COMMIT_HISTORY_MAX entries. */
+    function readCommitHistory(storage) {
+      const store = storage === undefined ? commitStorage() : storage;
+      if (store === null || store === undefined || typeof store.getItem !== "function") return [];
+      let raw = null;
+      try {
+        raw = store.getItem(COMMIT_HISTORY_KEY);
+      } catch (error) {
+        raw = null;
+      }
+      if (typeof raw !== "string" || raw === "") return [];
+      let parsed = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (error) {
+        return [];
+      }
+      if (!Array.isArray(parsed)) return [];
+      const out = [];
+      for (let index = 0; index < parsed.length; index += 1) {
+        const item = parsed[index];
+        if (!isNonEmptyString(item)) continue;
+        const trimmed = item.trim();
+        if (trimmed === "" || out.indexOf(trimmed) !== -1) continue;
+        out.push(trimmed);
+        if (out.length >= COMMIT_HISTORY_MAX) break;
+      }
+      return out;
+    }
+
+    /** Record one used commit message and return the refreshed list. */
+    function rememberCommitMessage(storage, message) {
+      const store = storage === undefined ? commitStorage() : storage;
+      const trimmed = isNonEmptyString(message) ? message.trim() : "";
+      if (trimmed === "") return readCommitHistory(store);
+      const previous = readCommitHistory(store);
+      const next = [trimmed];
+      for (let index = 0; index < previous.length; index += 1) {
+        if (previous[index] !== trimmed && next.length < COMMIT_HISTORY_MAX) next.push(previous[index]);
+      }
+      if (store !== null && store !== undefined && typeof store.setItem === "function") {
+        try {
+          store.setItem(COMMIT_HISTORY_KEY, JSON.stringify(next));
+        } catch (error) {
+          // Quota / private-mode failures must never break committing.
+        }
+      }
+      return next;
+    }
+
+    // -------------------------------------------------------------------------
     // Host API (docs/contract.md section 1)
     // -------------------------------------------------------------------------
 
@@ -336,6 +527,9 @@ window.__ModuleLoader__.load({
           limit: opts.limit !== undefined ? opts.limit : LOG_LIMIT,
           skip: opts.skip !== undefined ? opts.skip : 0,
           ref: opts.ref !== undefined ? opts.ref : "HEAD",
+          grep: opts.grep,
+          author: opts.author,
+          path: opts.path,
         });
       },
       commitDetail: function (root, sha) {
@@ -358,6 +552,30 @@ window.__ModuleLoader__.load({
       },
       checkout: function (root, branch) {
         return requestJson("checkout", null, { root: root, branch: branch });
+      },
+      /** Per-file +N/-N for the whole working tree (one request, see contract 1.5). */
+      stats: function (root) {
+        return requestJson("stats", { root: root });
+      },
+      /** Apply exactly one reconstructed hunk to the index. */
+      applyHunk: function (root, path, direction, patch) {
+        return requestJson("apply-hunk", null, { root: root, path: path, direction: direction, patch: patch });
+      },
+      /** Amend the previous commit (message may be replaced wholesale). */
+      amend: function (root, message) {
+        return requestJson("amend", null, { root: root, message: message });
+      },
+      /** create / delete / rename through the single POST /git/branches route. */
+      branchAction: function (root, action, params) {
+        const body = { root: root, action: action };
+        if (params !== null && params !== undefined && typeof params === "object") {
+          const keys = Object.keys(params);
+          for (let index = 0; index < keys.length; index += 1) {
+            const key = keys[index];
+            if (params[key] !== undefined) body[key] = params[key];
+          }
+        }
+        return requestJson("branches", null, body);
       },
       health: function () {
         return requestJson("health", null);
@@ -602,7 +820,7 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Diff viewer: hunk headers, line numbers, add/del tinting
+    // Diff viewer: hunk headers, line numbers, add/del tinting, per-hunk staging
     // -------------------------------------------------------------------------
 
     function DiffView(props) {
@@ -613,6 +831,15 @@ window.__ModuleLoader__.load({
       const attemptRef = React.useState(0);
       const attempt = attemptRef[0];
       const setAttempt = attemptRef[1];
+      const busyRef = React.useState(null);
+      const busyHunk = busyRef[0];
+      const setBusyHunk = busyRef[1];
+      const hunkErrorRef = React.useState(null);
+      const hunkError = hunkErrorRef[0];
+      const setHunkError = hunkErrorRef[1];
+      const noticeRef = React.useState(null);
+      const notice = noticeRef[0];
+      const setNotice = noticeRef[1];
 
       React.useEffect(function () {
         let cancelled = false;
@@ -629,6 +856,37 @@ window.__ModuleLoader__.load({
         };
       }, [props.cwd, props.path, props.mode, props.rev, attempt]);
 
+      React.useEffect(function () {
+        if (notice === null) return undefined;
+        const timer = setTimeout(function () {
+          setNotice(null);
+        }, NOTICE_MS);
+        return function () {
+          clearTimeout(timer);
+        };
+      }, [notice]);
+
+      /** Only the working-tree and the staged diff can be applied hunk by hunk. */
+      const stageable = props.mode === "worktree";
+      const unstageable = props.mode === "staged";
+
+      function applyHunk(hunk, index, direction) {
+        if (busyHunk !== null) return;
+        setBusyHunk(index);
+        setHunkError(null);
+        setNotice(null);
+        const patch = buildHunkPatch(props.path, hunk);
+        api.applyHunk(props.cwd, props.path, direction, patch).then(function () {
+          setBusyHunk(null);
+          setNotice(direction === "stage" ? t("changes.hunk.staged") : t("changes.hunk.unstaged"));
+          if (typeof props.onChanged === "function") props.onChanged();
+          setAttempt(attempt + 1);
+        }, function (error) {
+          setBusyHunk(null);
+          setHunkError(describeFailure(t, "changes.hunk.failed", error));
+        });
+      }
+
       function renderLine(line, key) {
         const info = classifyDiffLine(line);
         const text = line !== null && typeof line === "object" && typeof line.text === "string" ? line.text : "";
@@ -642,8 +900,25 @@ window.__ModuleLoader__.load({
       function renderHunk(hunk, index) {
         const lines = hunk !== null && typeof hunk === "object" && Array.isArray(hunk.lines) ? hunk.lines : [];
         const header = hunk !== null && typeof hunk === "object" && isNonEmptyString(hunk.header) ? hunk.header : "@@";
+        const direction = stageable ? "stage" : unstageable ? "unstage" : null;
+        const labelKey = direction === "stage" ? "changes.hunk.stage" : "changes.hunk.unstage";
+        const action = direction === null
+          ? null
+          : h("button", {
+            type: "button",
+            className: "dg-hunk-btn",
+            disabled: busyHunk !== null,
+            title: t(labelKey),
+            "aria-label": t(labelKey) + " " + header,
+            onClick: function (event) {
+              if (event !== null && event !== undefined && typeof event.stopPropagation === "function") event.stopPropagation();
+              applyHunk(hunk, index, direction);
+            },
+          }, busyHunk === index ? t("changes.action.busy") : t(labelKey));
         return h("div", { className: "dg-hunk-block", key: "hunk-" + String(index) },
-          h("div", { className: "dg-hunk" }, header),
+          h("div", { className: "dg-hunk" },
+            action === null ? null : h("span", { className: "dg-hunk-actions" }, action),
+            h("span", { className: "dg-hunk-text" }, header)),
           lines.map(function (line, lineIndex) {
             return renderLine(line, "line-" + String(index) + "-" + String(lineIndex));
           }));
@@ -684,6 +959,14 @@ window.__ModuleLoader__.load({
           }));
       }
 
+      const notices = [];
+      if (hunkError !== null) {
+        notices.push(h("div", { className: "dg-notice dg-notice-error", key: "hunk-error", role: "alert" }, hunkError));
+      }
+      if (notice !== null) {
+        notices.push(h("div", { className: "dg-notice dg-notice-success", key: "hunk-notice", role: "status" }, notice));
+      }
+
       return h("div", { className: "dg-diff" },
         h("div", { className: "dg-diff-head" },
           typeof props.onBack === "function"
@@ -703,11 +986,12 @@ window.__ModuleLoader__.load({
               h("span", { className: "dg-del" }, "-" + String(deletions)))
             : null),
         truncated ? h("div", { className: "dg-diff-notice" }, t("diff.truncated")) : null,
+        notices,
         body);
     }
 
     // -------------------------------------------------------------------------
-    // Changes tab: commit box, four groups, row actions, inline confirm, diff
+    // Changes tab: commit box (amend + history), directory tree, row actions, diff
     // -------------------------------------------------------------------------
 
     function ChangesPane(props) {
@@ -736,9 +1020,36 @@ window.__ModuleLoader__.load({
       const pendingDiscardRef = React.useState(null);
       const pendingDiscard = pendingDiscardRef[0];
       const setPendingDiscard = pendingDiscardRef[1];
+      const statsRef = React.useState(null);
+      const stats = statsRef[0];
+      const setStats = statsRef[1];
+      const expandedRef = React.useState(function () { return {}; });
+      const expanded = expandedRef[0];
+      const setExpanded = expandedRef[1];
+      const amendRef = React.useState(false);
+      const amend = amendRef[0];
+      const setAmend = amendRef[1];
+      const historyRef = React.useState(function () { return readCommitHistory(); });
+      const commitHistory = historyRef[0];
+      const setCommitHistory = historyRef[1];
 
-      const canCommit = message.trim().length > 0 && (staged.length > 0 || unstaged.length > 0);
-      const autoStageAll = staged.length === 0 && unstaged.length > 0;
+      const hasChanges = staged.length > 0 || unstaged.length > 0;
+      const canCommit = message.trim().length > 0 && (hasChanges || amend === true);
+      const autoStageAll = staged.length === 0 && unstaged.length > 0 && amend !== true;
+
+      /** Per-file +N/-N comes from one batched GET /git/stats. */
+      const refreshStats = React.useCallback(function () {
+        if (!isNonEmptyString(props.cwd)) return;
+        api.stats(props.cwd).then(function (payload) {
+          setStats(payload !== null && typeof payload === "object" ? payload : null);
+        }, function () {
+          setStats(null);
+        });
+      }, [props.cwd]);
+
+      React.useEffect(function () {
+        refreshStats();
+      }, [refreshStats, props.status]);
 
       React.useEffect(function () {
         if (notice === null) return undefined;
@@ -779,17 +1090,23 @@ window.__ModuleLoader__.load({
           setActionError(t("changes.commit.empty"));
           return;
         }
-        if (!canCommit) {
+        if (!hasChanges && amend !== true) {
           setActionError(t("changes.commit.nothing"));
           return;
         }
+        const amending = amend === true;
         runWrite("commit", function () {
-          return api.commitChanges(props.cwd, trimmed, autoStageAll).then(function (payload) {
+          const request = amending ? api.amend(props.cwd, trimmed) : api.commitChanges(props.cwd, trimmed, autoStageAll);
+          return request.then(function (payload) {
             setMessage("");
+            setAmend(false);
+            setCommitHistory(rememberCommitMessage(undefined, trimmed));
             const shortSha = payload !== null && typeof payload === "object" && isNonEmptyString(payload.shortSha)
               ? payload.shortSha
-              : isNonEmptyString(payload.sha) ? payload.sha.slice(0, 7) : "";
-            setNotice(t("changes.commit.success", { sha: shortSha }));
+              : payload !== null && typeof payload === "object" && isNonEmptyString(payload.sha) ? payload.sha.slice(0, 7) : "";
+            setNotice(amending
+              ? t("changes.amend.success", { sha: shortSha })
+              : t("changes.commit.success", { sha: shortSha }));
             setDiff(null);
             return payload;
           });
@@ -822,12 +1139,41 @@ window.__ModuleLoader__.load({
         if (isNonEmptyString(path)) setDiff({ path: path, mode: mode });
       }
 
-      function renderRow(item, group) {
+      /** Collapse/expand one directory of one group; directories default to open. */
+      function toggleDir(section, path) {
+        const key = section + ":" + path;
+        setExpanded(function (previous) {
+          const next = Object.assign({}, previous);
+          // Directories default to open, so a missing/true entry collapses and
+          // an explicit false expands.
+          next[key] = previous[key] === false;
+          return next;
+        });
+      }
+
+      /** +N/-N for one row, or null when the Host has no numbers for it. */
+      function statFor(section, path) {
+        if (stats === null || typeof stats !== "object") return null;
+        const map = section === "staged"
+          ? stats.staged
+          : section === "unstaged" || section === "conflicted" ? stats.unstaged : null;
+        if (map === null || map === undefined || typeof map !== "object") return null;
+        const entry = map[path];
+        if (entry === null || entry === undefined || typeof entry !== "object") return null;
+        if (entry.binary === true) return { binary: true, additions: 0, deletions: 0 };
+        const additions = typeof entry.additions === "number" ? entry.additions : null;
+        const deletions = typeof entry.deletions === "number" ? entry.deletions : null;
+        if (additions === null && deletions === null) return null;
+        return { binary: false, additions: additions === null ? 0 : additions, deletions: deletions === null ? 0 : deletions };
+      }
+
+      function renderRow(item, group, depth) {
         const path = item !== null && typeof item === "object" && isNonEmptyString(item.path) ? item.path : "";
         if (path === "") return null;
         const origPath = item !== null && typeof item === "object" && isNonEmptyString(item.origPath) ? item.origPath : "";
         const meta = statusMeta(item ? item.status : "M", group.section);
         const selected = diff !== null && diff.path === path;
+        const stat = statFor(group.section, path);
         const actions = [];
         for (let index = 0; index < group.actions.length; index += 1) {
           const kind = group.actions[index];
@@ -856,6 +1202,7 @@ window.__ModuleLoader__.load({
           tabIndex: 0,
           "aria-pressed": selected ? "true" : "false",
           title: t("changes.row.open", { path: path }),
+          style: { paddingLeft: String(5 + depth * 12) + "px" },
           onClick: function () {
             openDiff(path, group.diffMode);
           },
@@ -867,9 +1214,49 @@ window.__ModuleLoader__.load({
         },
           h("span", { className: "dg-badge dg-badge-" + meta.tone, title: t(meta.labelKey) }, meta.letter),
           h("span", { className: "dg-file-name" },
-            path,
+            basename(path),
             origPath === "" ? null : h("span", { className: "dg-file-orig" }, " <- " + origPath)),
+          stat === null
+            ? null
+            : stat.binary === true
+              ? h("span", { className: "dg-numstat dg-muted" }, t("history.binary"))
+              : h("span", { className: "dg-numstat" },
+                h("span", { className: "dg-add" }, "+" + String(stat.additions)),
+                h("span", { className: "dg-del" }, "-" + String(stat.deletions))),
           actions.length > 0 ? h("span", { className: "dg-row-actions" }, actions) : null);
+      }
+
+      function renderTreeNode(node, group, depth) {
+        if (node === null || typeof node !== "object") return null;
+        if (node.type !== "dir") return renderRow(node.entry, group, depth);
+        const key = group.section + ":" + node.path;
+        const open = expanded[key] !== false;
+        return h("div", { className: "dg-tree-dir", key: "dir:" + key },
+          h("div", {
+            className: "dg-dir-row",
+            role: "button",
+            tabIndex: 0,
+            "aria-expanded": open ? "true" : "false",
+            "aria-label": t("changes.tree.toggle", { path: node.path }),
+            title: t("changes.tree.toggle", { path: node.path }),
+            style: { paddingLeft: String(5 + depth * 12) + "px" },
+            onClick: function () {
+              toggleDir(group.section, node.path);
+            },
+            onKeyDown: function (event) {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              if (typeof event.preventDefault === "function") event.preventDefault();
+              toggleDir(group.section, node.path);
+            },
+          },
+            h("span", { className: "dg-dir-caret", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8"),
+            h("span", { className: "dg-dir-name" }, node.name),
+            h("span", { className: "dg-dir-count" }, String(countTreeFiles(node)))),
+          open
+            ? h("div", { className: "dg-tree-children" }, node.children.map(function (child) {
+              return renderTreeNode(child, group, depth + 1);
+            }))
+            : null);
       }
 
       const groups = [
@@ -879,7 +1266,27 @@ window.__ModuleLoader__.load({
         { section: "conflicted", titleKey: "changes.group.conflicted", items: conflicted, diffMode: "worktree", actions: [] },
       ].filter(function (group) {
         return group.items.length > 0;
+      }).map(function (group) {
+        return {
+          section: group.section,
+          titleKey: group.titleKey,
+          items: group.items,
+          diffMode: group.diffMode,
+          actions: group.actions,
+          tree: buildChangeTree(group.items),
+        };
       });
+
+      let dirTotal = 0;
+      let dirCollapsed = 0;
+      for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+        const dirs = collectTreeDirs(groups[groupIndex].tree, []);
+        for (let dirIndex = 0; dirIndex < dirs.length; dirIndex += 1) {
+          dirTotal += 1;
+          if (expanded[groups[groupIndex].section + ":" + dirs[dirIndex].path] === false) dirCollapsed += 1;
+        }
+      }
+      const allCollapsed = dirTotal > 0 && dirCollapsed === dirTotal;
 
       const commitBox = h("div", { className: "dg-commit-box" },
         h("textarea", {
@@ -898,13 +1305,41 @@ window.__ModuleLoader__.load({
             }
           },
         }),
+        h("div", { className: "dg-commit-options" },
+          h("label", { className: "dg-amend", title: t("changes.amend.hint") },
+            h("input", {
+              type: "checkbox",
+              className: "dg-amend-check",
+              checked: amend === true,
+              "aria-label": t("changes.amend"),
+              onChange: function (event) {
+                setAmend(event.target.checked === true);
+              },
+            }),
+            h("span", { className: "dg-amend-label" }, t("changes.amend"))),
+          amend === true ? h("span", { className: "dg-hint" }, t("changes.amend.hint")) : null),
+        commitHistory.length === 0 ? null : h("div", { className: "dg-commit-history" },
+          h("span", { className: "dg-commit-history-title" }, t("changes.commitHistory")),
+          commitHistory.map(function (item, index) {
+            return h("button", {
+              key: "recent-" + String(index),
+              type: "button",
+              className: "dg-history-chip",
+              title: item,
+              onClick: function () {
+                setMessage(item);
+              },
+            }, item);
+          })),
         h("div", { className: "dg-commit-actions" },
           h("button", {
             type: "button",
             className: "dg-btn dg-btn-primary",
             disabled: !canCommit || busy !== null,
             onClick: submitCommit,
-          }, busy === "commit" ? t("changes.commit.committing") : t("changes.commit.button")),
+          }, busy === "commit"
+            ? t("changes.commit.committing")
+            : amend === true ? t("changes.amend.button") : t("changes.commit.button")),
           h("span", { className: "dg-hint" },
             conflicted.length > 0
               ? t("changes.conflict.hint")
@@ -916,6 +1351,9 @@ window.__ModuleLoader__.load({
       }
       if (notice !== null) {
         notices.push(h("div", { className: "dg-notice dg-notice-success", key: "notice", role: "status" }, notice));
+      }
+      if (allCollapsed) {
+        notices.push(h("div", { className: "dg-notice dg-notice-info", key: "collapsed-hint", role: "status" }, t("changes.tree.collapsed")));
       }
 
       let listContent;
@@ -930,8 +1368,8 @@ window.__ModuleLoader__.load({
             h("div", { className: "dg-group-head" },
               h("span", { className: "dg-group-title" }, t(group.titleKey)),
               h("span", { className: "dg-group-count" }, String(group.items.length))),
-            h("div", { className: "dg-file-list" }, group.items.map(function (item) {
-              return renderRow(item, group);
+            h("div", { className: "dg-file-list" }, group.tree.map(function (node) {
+              return renderTreeNode(node, group, 0);
             })));
         });
       }
@@ -955,6 +1393,7 @@ window.__ModuleLoader__.load({
           path: diff.path,
           mode: diff.mode,
           t: t,
+          onChanged: notifyChanged,
           onBack: function () {
             setDiff(null);
           },
@@ -1130,13 +1569,19 @@ window.__ModuleLoader__.load({
       const refNameRef = React.useState("HEAD");
       const refName = refNameRef[0];
       const setRefName = refNameRef[1];
+      const filterRef = React.useState(function () { return { grep: "", author: "", path: "" }; });
+      const filters = filterRef[0];
+      const setFilters = filterRef[1];
       const commitsRef = React.useState([]);
       const commits = commitsRef[0];
-      // Lane layout for the current page; recomputed only when the page changes.
-      const graph = React.useMemo(function () {
-        return computeLanes(commits, { maxLanes: GRAPH_MAX_LANES });
-      }, [commits]);
       const setCommits = commitsRef[1];
+      const headSha = React.useMemo(function () {
+        return headShaOf(commits);
+      }, [commits]);
+      // Lane layout for the current page; the HEAD life gets the accent colour.
+      const graph = React.useMemo(function () {
+        return computeLanes(commits, { maxLanes: GRAPH_MAX_LANES, headSha: headSha });
+      }, [commits, headSha]);
       const hasMoreRef = React.useState(false);
       const hasMore = hasMoreRef[0];
       const setHasMore = hasMoreRef[1];
@@ -1152,6 +1597,15 @@ window.__ModuleLoader__.load({
       const detailRef = React.useState(null);
       const detail = detailRef[0];
       const setDetail = detailRef[1];
+      const switchBusyRef = React.useState(false);
+      const switchBusy = switchBusyRef[0];
+      const setSwitchBusy = switchBusyRef[1];
+      const switchErrorRef = React.useState(null);
+      const switchError = switchErrorRef[0];
+      const setSwitchError = switchErrorRef[1];
+      const noticeRef = React.useState(null);
+      const notice = noticeRef[0];
+      const setNotice = noticeRef[1];
       const tokenRef = React.useState(0);
       const token = tokenRef[0];
       const setToken = tokenRef[1];
@@ -1161,6 +1615,8 @@ window.__ModuleLoader__.load({
       const refreshTokenRef = React.useRef(props.refreshToken);
       const commitsLenRef = React.useRef(0);
       commitsLenRef.current = commits.length;
+
+      const filterActive = filters.grep !== "" || filters.author !== "" || filters.path !== "";
 
       React.useEffect(function () {
         let cancelled = false;
@@ -1187,6 +1643,16 @@ window.__ModuleLoader__.load({
         return undefined;
       }, [props.refreshToken]);
 
+      React.useEffect(function () {
+        if (notice === null) return undefined;
+        const timer = setTimeout(function () {
+          setNotice(null);
+        }, NOTICE_MS);
+        return function () {
+          clearTimeout(timer);
+        };
+      }, [notice]);
+
       const loadPage = React.useCallback(function (append) {
         if (append === true && appendingRef.current === true) return;
         const seq = seqRef.current + 1;
@@ -1198,7 +1664,14 @@ window.__ModuleLoader__.load({
           setLoading(true);
         }
         const skip = append === true ? commitsLenRef.current : 0;
-        api.log(props.cwd, { limit: LOG_LIMIT, skip: skip, ref: refName }).then(function (payload) {
+        api.log(props.cwd, {
+          limit: LOG_LIMIT,
+          skip: skip,
+          ref: refName,
+          grep: filters.grep.trim(),
+          author: filters.author.trim(),
+          path: filters.path.trim(),
+        }).then(function (payload) {
           if (seqRef.current !== seq) return;
           const list = payload !== null && typeof payload === "object" && Array.isArray(payload.commits) ? payload.commits : [];
           setLogError(null);
@@ -1217,7 +1690,7 @@ window.__ModuleLoader__.load({
           setLoadingMore(false);
           appendingRef.current = false;
         });
-      }, [props.cwd, refName]);
+      }, [props.cwd, refName, filters.grep, filters.author, filters.path]);
 
       React.useEffect(function () {
         loadPage(false);
@@ -1226,6 +1699,39 @@ window.__ModuleLoader__.load({
       useEscape(detail !== null, function () {
         setDetail(null);
       });
+
+      function updateFilter(name, value) {
+        const next = typeof value === "string" ? value : "";
+        setFilters(function (previous) {
+          if (previous[name] === next) return previous;
+          const updated = { grep: previous.grep, author: previous.author, path: previous.path };
+          updated[name] = next;
+          return updated;
+        });
+      }
+
+      function clearFilters() {
+        setFilters({ grep: "", author: "", path: "" });
+      }
+
+      function checkoutRange() {
+        if (refName === "HEAD" || switchBusy === true) return;
+        const target = refName;
+        setSwitchBusy(true);
+        setSwitchError(null);
+        setNotice(null);
+        api.checkout(props.cwd, target).then(function () {
+          setSwitchBusy(false);
+          setNotice(t("branch.switch.success", { branch: target }));
+          setToken(function (value) {
+            return value + 1;
+          });
+          if (typeof props.onChanged === "function") props.onChanged();
+        }, function (error) {
+          setSwitchBusy(false);
+          setSwitchError(describeFailure(t, "branch.switch.failed", error));
+        });
+      }
 
       function onScroll(event) {
         const node = event.currentTarget;
@@ -1266,11 +1772,24 @@ window.__ModuleLoader__.load({
         h("select", {
           className: "dg-select",
           value: refName,
-          "aria-label": t("history.branch"),
+          title: t("history.refRange"),
+          "aria-label": t("history.refRange"),
           onChange: function (event) {
             setRefName(event.target.value);
           },
         }, options),
+        h("button", {
+          type: "button",
+          className: "dg-btn dg-checkout-btn",
+          disabled: refName === "HEAD" || switchBusy === true,
+          title: refName === "HEAD"
+            ? t("history.checkout.hint")
+            : t("history.checkout.title", { branch: refName }),
+          "aria-label": refName === "HEAD"
+            ? t("history.checkout.hint")
+            : t("history.checkout.title", { branch: refName }),
+          onClick: checkoutRange,
+        }, switchBusy === true ? t("changes.action.busy") : t("history.checkout.button")),
         h("button", {
           type: "button",
           className: "dg-icon-btn",
@@ -1281,16 +1800,71 @@ window.__ModuleLoader__.load({
           },
         }, h(RefreshIcon)));
 
-      const banner = (logError === null && branchError === null) ? null : h("div", { className: "dg-error-banner", role: "alert" },
-        h(AlertIcon, { className: "dg-error-icon" }),
-        h("span", { className: "dg-error-text" }, describeFailure(t, "error.banner", logError !== null ? logError : branchError)),
+      const filterBar = h("div", { className: "dg-history-filters" },
+        h("input", {
+          className: "dg-filter-input",
+          value: filters.grep,
+          placeholder: t("history.filter.grep"),
+          title: t("history.filter.grep"),
+          "aria-label": t("history.filter.grep"),
+          spellCheck: false,
+          onChange: function (event) {
+            updateFilter("grep", event.target.value);
+          },
+        }),
+        h("input", {
+          className: "dg-filter-input",
+          value: filters.author,
+          placeholder: t("history.filter.author"),
+          title: t("history.filter.author"),
+          "aria-label": t("history.filter.author"),
+          spellCheck: false,
+          onChange: function (event) {
+            updateFilter("author", event.target.value);
+          },
+        }),
+        h("input", {
+          className: "dg-filter-input",
+          value: filters.path,
+          placeholder: t("history.filter.path"),
+          title: t("history.filter.path"),
+          "aria-label": t("history.filter.path"),
+          spellCheck: false,
+          onChange: function (event) {
+            updateFilter("path", event.target.value);
+          },
+        }),
         h("button", {
           type: "button",
-          className: "dg-link-btn",
-          onClick: function () {
-            setToken(token + 1);
-          },
-        }, t("state.retry")));
+          className: "dg-link-btn dg-filter-clear",
+          disabled: filterActive !== true,
+          title: t("history.filter.clear"),
+          onClick: clearFilters,
+        }, t("history.filter.clear")),
+        filterActive ? h("span", { className: "dg-filter-active" }, t("history.filter.active")) : null);
+
+      const banners = [];
+      if (logError !== null || branchError !== null) {
+        banners.push(h("div", { className: "dg-error-banner", key: "log-error", role: "alert" },
+          h(AlertIcon, { className: "dg-error-icon" }),
+          h("span", { className: "dg-error-text" }, describeFailure(t, "error.banner", logError !== null ? logError : branchError)),
+          h("button", {
+            type: "button",
+            className: "dg-link-btn",
+            onClick: function () {
+              setToken(token + 1);
+            },
+          }, t("state.retry"))));
+      }
+      if (switchError !== null) {
+        banners.push(h("div", { className: "dg-notice dg-notice-error", key: "switch-error", role: "alert" }, switchError));
+      }
+      if (notice !== null) {
+        banners.push(h("div", { className: "dg-notice dg-notice-success", key: "switch-notice", role: "status" }, notice));
+      }
+      if (graph.maxLanes >= GRAPH_MAX_LANES) {
+        banners.push(h("div", { className: "dg-diff-notice", key: "lanes-truncated" }, t("history.lanes.truncated", { max: GRAPH_MAX_LANES })));
+      }
 
       const commitRows = commits.map(function (commit, index) {
         const sha = commit !== null && typeof commit === "object" && isNonEmptyString(commit.sha) ? commit.sha : "";
@@ -1299,12 +1873,14 @@ window.__ModuleLoader__.load({
         const refs = commit !== null && typeof commit === "object" && Array.isArray(commit.refs) ? commit.refs : [];
         const author = commit !== null && typeof commit === "object" && isNonEmptyString(commit.author) ? commit.author : "";
         const time = commit !== null && typeof commit === "object" ? commit.time : null;
+        const isHead = headSha !== "" && sha === headSha;
         return h("div", {
-          className: "dg-commit-row",
+          className: "dg-commit-row" + (isHead ? " dg-commit-row-head" : ""),
           key: sha === "" ? "commit-" + String(index) : sha,
           role: "button",
           tabIndex: 0,
           title: subject,
+          "aria-current": isHead ? "true" : undefined,
           onClick: function () {
             setDetail({ sha: sha });
           },
@@ -1314,7 +1890,11 @@ window.__ModuleLoader__.load({
             setDetail({ sha: sha });
           },
         },
-          h(CommitGraph, { row: graph.rows[index], rowKey: sha === "" ? index : sha }),
+          h(CommitGraph, {
+            row: graph.rows[index],
+            rowKey: sha === "" ? index : sha,
+            headLabel: isHead ? t("graph.headLabel") : undefined,
+          }),
           h("div", { className: "dg-commit-body" },
             h("div", { className: "dg-commit-line" },
               h("span", { className: "dg-sha" }, shortSha),
@@ -1331,15 +1911,24 @@ window.__ModuleLoader__.load({
       if (loading === true) {
         listContent = h("div", { className: "dg-loading" }, t("history.loading"));
       } else if (commits.length === 0) {
-        listContent = h("div", { className: "dg-empty" },
-          h("div", { className: "dg-empty-title" }, t("history.empty")));
+        listContent = filterActive === true
+          ? h("div", { className: "dg-empty" },
+            h("div", { className: "dg-empty-title" }, t("history.empty.filtered")),
+            h("button", {
+              type: "button",
+              className: "dg-link-btn",
+              onClick: clearFilters,
+            }, t("history.filter.clear")))
+          : h("div", { className: "dg-empty" },
+            h("div", { className: "dg-empty-title" }, t("history.empty")));
       } else {
         listContent = commitRows;
       }
 
       return h("div", { className: "dg-history" },
         header,
-        banner,
+        filterBar,
+        banners,
         h("div", { className: "dg-commit-list", onScroll: onScroll },
           listContent,
           loadingMore === true ? h("div", { className: "dg-load-more" }, t("history.loadMore")) : null,
@@ -1355,6 +1944,9 @@ window.__ModuleLoader__.load({
     /** Lane palette: eight hues that stay distinguishable on light and dark panels. */
     const LANE_COLORS = ["#4f9cf9", "#e3b341", "#3fb950", "#a371f7", "#f85149", "#39c5cf", "#db61a2", "#8b949e"];
 
+    /** Colour of the branch life that contains HEAD (index `HEAD_COLOR`, one past the palette). */
+    const GRAPH_HEAD_COLOR = "#f78166";
+
     /** Graph geometry, in CSS pixels; the commit row is exactly this tall. */
     const GRAPH_LANE_WIDTH = 14;
     const GRAPH_ROW_HEIGHT = 44;
@@ -1364,7 +1956,9 @@ window.__ModuleLoader__.load({
     const DEFAULT_MAX_LANES = 12;
     /** Palette size; matches LANE_COLORS.length. */
     const PALETTE_SIZE = 8;
-    /** Sanitised empty parents list (a fresh frozen array per call would churn). */
+    /** Colour slot reserved for the HEAD branch life. */
+    const HEAD_COLOR = PALETTE_SIZE;
+    /** Sanitised empty parents list. */
     const NO_PARENTS = [];
 
 /* ------------------------------------------------------------------------ */
@@ -1431,7 +2025,8 @@ function allocColor(lanes, colors) {
  * Lay out the commit graph lanes for a page of commits (newest → oldest).
  *
  * @param {Array<{ sha?: string, parents?: string[] }>} commits
- * @param {{ maxLanes?: number }} [options]
+ * @param {{ maxLanes?: number, headSha?: string }} [options] `headSha` marks the
+ *   branch life that contains HEAD so it can use `HEAD_COLOR` end to end.
  * @returns {{
  *   maxLanes: number,
  *   rows: Array<{
@@ -1448,6 +2043,7 @@ function allocColor(lanes, colors) {
  */
 function computeLanes(commits, options = {}) {
   const limit = normalizeMaxLanes(options && typeof options === "object" ? options.maxLanes : undefined);
+  const headSha = options && typeof options === "object" && typeof options.headSha === "string" ? options.headSha : "";
   const list = Array.isArray(commits) ? commits : [];
 
   /** `lanes[i]` = sha the column `i` expects next, or `null` when the slot is free. */
@@ -1476,7 +2072,7 @@ function computeLanes(commits, options = {}) {
         colors.push(null);
       }
       lanes[lane] = sha;
-      colors[lane] = allocColor(lanes, colors);
+      colors[lane] = headSha !== "" && sha === headSha ? HEAD_COLOR : allocColor(lanes, colors);
       isNewColumn = true;
     }
     const dotColor = typeof colors[lane] === "number" ? colors[lane] : 0;
@@ -1571,6 +2167,7 @@ function computeLanes(commits, options = {}) {
       exits: exits.filter((exit) => exit.col < width),
       merges: merges.filter((merge) => merge.from < width && merge.to < width),
       color: dotColor,
+      isHead: headSha !== "" && sha === headSha,
       laneColors: [],
     };
     for (let i = 0; i < width; i += 1) {
@@ -1618,10 +2215,12 @@ function computeLanes(commits, options = {}) {
       const palette = Array.isArray(row.laneColors) ? row.laneColors : [];
       const colourOf = function (column) {
         const index = typeof palette[column] === "number" ? palette[column] : 0;
+        if (index === HEAD_COLOR) return GRAPH_HEAD_COLOR;
         return LANE_COLORS[((index % LANE_COLORS.length) + LANE_COLORS.length) % LANE_COLORS.length];
       };
       const centre = function (column) { return column * laneWidth + laneWidth / 2; };
       const lane = Math.max(0, row.lane | 0);
+      const isHeadRow = row.isHead === true;
       const exits = Array.isArray(row.exits) ? row.exits : [];
       const entries = Array.isArray(row.entries) ? row.entries : [];
       const passThrough = Array.isArray(row.passThrough) ? row.passThrough : [];
@@ -1675,21 +2274,436 @@ function computeLanes(commits, options = {}) {
           fill: "none", stroke: colourOf(merge.from), strokeWidth: 1.6, strokeLinecap: "round",
         }));
       }
+      // HEAD gets a clearly larger dot plus a ring so it reads at a glance.
+      if (isHeadRow) {
+        shapes.push(h("circle", {
+          key: keyPrefix + "dot-ring",
+          className: "dg-graph-dot-ring",
+          cx: centre(lane), cy: middle, r: 6.1,
+          fill: "none", stroke: colourOf(lane), strokeWidth: 1.2, opacity: 0.6,
+        }));
+      }
       // The commit dot paints last so it covers the joins underneath it.
       shapes.push(h("circle", {
         key: keyPrefix + "dot",
-        cx: centre(lane), cy: middle, r: 3.6,
-        fill: colourOf(lane), stroke: "var(--dsw-specific-menu,#fff)", strokeWidth: 1.5,
+        className: isHeadRow ? "dg-graph-dot dg-graph-dot-head" : "dg-graph-dot",
+        cx: centre(lane), cy: middle, r: isHeadRow ? 4.8 : 3.6,
+        fill: colourOf(lane),
+        stroke: "var(--dsw-alias-bg-layer-1,#fff)",
+        strokeWidth: isHeadRow ? 2.1 : 1.5,
       }));
 
       return h("span", {
-        className: "dg-graph",
+        className: "dg-graph" + (isHeadRow ? " dg-graph-head" : ""),
         style: { width: width + "px", height: height + "px" },
+        title: isHeadRow && typeof props.headLabel === "string" ? props.headLabel : undefined,
         "aria-hidden": "true",
       }, h("svg", {
         width: width, height: height, viewBox: "0 0 " + width + " " + height,
         className: "dg-graph-svg",
       }, shapes));
+    }
+
+    // -------------------------------------------------------------------------
+    // Branch panel (the header chip's popover)
+    // -------------------------------------------------------------------------
+
+    /** Failure text for one Host error: the Host's own message comes first. */
+    function failureMessage(error) {
+      const failure = toApiError(error);
+      return failure.detail !== "" ? failure.detail : failure.code;
+    }
+
+    /**
+     * The header chip's popover: the current branch with its upstream/ahead/behind
+     * and change summary, the switchable branch list (local and remote groups,
+     * current branch ticked) and the create/rename/delete actions.
+     *
+     * Switching is a write: it goes through POST /git/checkout and refreshes both
+     * status and branches. Failures keep the panel open and show the Host message.
+     */
+    function BranchPanel(rawProps) {
+      const props = rawProps || {};
+      const t = typeof props.t === "function" ? props.t : defaultTranslate;
+      const root = isNonEmptyString(props.root) ? props.root : "";
+      const status = props.status !== null && typeof props.status === "object" ? props.status : {};
+
+      const branchesRef = React.useState(null);
+      const branches = branchesRef[0];
+      const setBranches = branchesRef[1];
+      const formRef = React.useState(function () { return { create: "", rename: null }; });
+      const form = formRef[0];
+      const setForm = formRef[1];
+      const pendingDeleteRef = React.useState(null);
+      const pendingDelete = pendingDeleteRef[0];
+      const setPendingDelete = pendingDeleteRef[1];
+      const busyRef = React.useState(null);
+      const busy = busyRef[0];
+      const setBusy = busyRef[1];
+      const actionErrorRef = React.useState(null);
+      const actionError = actionErrorRef[0];
+      const setActionError = actionErrorRef[1];
+      const noticeRef = React.useState(null);
+      const notice = noticeRef[0];
+      const setNotice = noticeRef[1];
+      const mountedRef = React.useRef(false);
+
+      React.useEffect(function () {
+        mountedRef.current = true;
+        return function () {
+          mountedRef.current = false;
+        };
+      }, []);
+
+      const loadBranches = React.useCallback(function () {
+        if (root === "") return;
+        api.branches(root).then(function (payload) {
+          if (!mountedRef.current) return;
+          setBranches(payload !== null && typeof payload === "object" ? payload : null);
+        }, function () {
+          if (!mountedRef.current) return;
+          setBranches(null);
+        });
+      }, [root]);
+
+      React.useEffect(function () {
+        loadBranches();
+      }, [loadBranches]);
+
+      React.useEffect(function () {
+        if (notice === null) return undefined;
+        const timer = setTimeout(function () {
+          setNotice(null);
+        }, NOTICE_MS);
+        return function () {
+          clearTimeout(timer);
+        };
+      }, [notice]);
+
+      function refreshAll() {
+        loadBranches();
+        if (typeof props.onChanged === "function") props.onChanged();
+      }
+
+      function begin(key) {
+        setBusy(key);
+        setActionError(null);
+        setNotice(null);
+      }
+
+      function switchTo(name) {
+        if (busy !== null || !isNonEmptyString(name)) return;
+        begin("switch:" + name);
+        api.checkout(root, name).then(function () {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setActionError(null);
+          setNotice(t("branch.switch.success", { branch: name }));
+          refreshAll();
+        }, function (error) {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setNotice(null);
+          setActionError({
+            key: "branch.switch.failed",
+            message: failureMessage(error),
+            retry: function () { switchTo(name); },
+          });
+        });
+      }
+
+      function createBranch() {
+        if (busy !== null) return;
+        const name = form.create.trim();
+        if (name === "") {
+          setActionError({ key: "branch.create.failed", message: t("branch.name.empty"), retry: null });
+          return;
+        }
+        begin("create");
+        api.branchAction(root, "create", { name: name }).then(function () {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setForm(function (previous) { return { create: "", rename: previous.rename }; });
+          setNotice(t("branch.create.success", { branch: name }));
+          refreshAll();
+        }, function (error) {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setActionError({
+            key: "branch.create.failed",
+            message: failureMessage(error),
+            retry: function () { createBranch(); },
+          });
+        });
+      }
+
+      function confirmRename() {
+        const rename = form.rename;
+        if (rename === null || busy !== null) return;
+        const next = rename.value.trim();
+        if (next === "" || next === rename.name) {
+          setForm(function (previous) { return { create: previous.create, rename: null }; });
+          return;
+        }
+        begin("rename:" + rename.name);
+        api.branchAction(root, "rename", { name: rename.name, newName: next }).then(function () {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setForm(function (previous) { return { create: previous.create, rename: null }; });
+          setNotice(t("branch.rename.success", { from: rename.name, to: next }));
+          refreshAll();
+        }, function (error) {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setActionError({
+            key: "branch.rename.failed",
+            message: failureMessage(error),
+            retry: function () { confirmRename(); },
+          });
+        });
+      }
+
+      function deleteBranch(name, force) {
+        if (busy !== null || !isNonEmptyString(name)) return;
+        begin("delete:" + name);
+        api.branchAction(root, "delete", { name: name, force: force === true }).then(function () {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          setPendingDelete(null);
+          setNotice(t("branch.delete.success", { branch: name }));
+          refreshAll();
+        }, function (error) {
+          if (!mountedRef.current) return;
+          setBusy(null);
+          const failure = toApiError(error);
+          const message = failure.detail !== "" ? failure.detail : failure.code;
+          // An unmerged branch only needs the explicit force confirmation; a
+          // conflict (e.g. the current branch) is a plain failure.
+          if (force !== true && failure.code !== "conflict") {
+            setPendingDelete({ name: name, force: true, unmerged: true, message: message });
+            return;
+          }
+          setPendingDelete(null);
+          setActionError({
+            key: "branch.delete.failed",
+            message: message,
+            retry: function () { deleteBranch(name, force); },
+          });
+        });
+      }
+
+      const branch = status.branch !== null && typeof status.branch === "object" ? status.branch : null;
+      const counts = status.counts !== null && typeof status.counts === "object" ? status.counts : null;
+      const currentName = branch !== null && isNonEmptyString(branch.name) ? branch.name : "";
+      const detached = branch !== null && branch.detached === true;
+      const ahead = branch === null ? 0 : toCount(branch.ahead);
+      const behind = branch === null ? 0 : toCount(branch.behind);
+      const upstream = branch !== null && isNonEmptyString(branch.upstream) ? branch.upstream : "";
+      const stagedCount = counts === null ? 0 : toCount(counts.staged);
+      const unstagedCount = counts === null ? 0 : toCount(counts.unstaged);
+      const untrackedCount = counts === null ? 0 : toCount(counts.untracked);
+      const conflictedCount = counts === null ? 0 : toCount(counts.conflicted);
+      const label = detached || currentName === "" ? t("chip.detached") : currentName;
+
+      const local = branches !== null && typeof branches === "object" && Array.isArray(branches.local) ? branches.local : [];
+      const remote = branches !== null && typeof branches === "object" && Array.isArray(branches.remote) ? branches.remote : [];
+
+      function renderBranchRow(entry, groupId) {
+        if (entry === null || typeof entry !== "object" || !isNonEmptyString(entry.name)) return null;
+        const name = entry.name;
+        const isCurrent = entry.isCurrent === true || (groupId === "local" && name === currentName);
+        if (form.rename !== null && form.rename.name === name) {
+          return h("div", { className: "dg-branch-rename", key: groupId + ":" + name },
+            h("input", {
+              className: "dg-pop-input",
+              value: form.rename.value,
+              "aria-label": t("branch.rename.placeholder"),
+              onChange: function (event) {
+                const value = event.target.value;
+                setForm(function (previous) {
+                  return {
+                    create: previous.create,
+                    rename: previous.rename === null ? null : { name: previous.rename.name, value: value },
+                  };
+                });
+              },
+              onKeyDown: function (event) {
+                if (event.key !== "Enter" && event.key !== "Escape") return;
+                if (typeof event.preventDefault === "function") event.preventDefault();
+                if (event.key === "Escape") setForm(function (previous) { return { create: previous.create, rename: null }; });
+                else confirmRename();
+              },
+            }),
+            h("button", { type: "button", className: "dg-btn", disabled: busy !== null, onClick: confirmRename }, t("branch.rename.confirm")),
+            h("button", {
+              type: "button",
+              className: "dg-mini-btn",
+              onClick: function () {
+                setForm(function (previous) { return { create: previous.create, rename: null }; });
+              },
+            }, t("branch.rename.cancel")));
+        }
+        const aheadEntry = toCount(entry.ahead);
+        const behindEntry = toCount(entry.behind);
+        return h("div", { className: "dg-branch-row" + (isCurrent ? " dg-branch-current" : ""), key: groupId + ":" + name },
+          h("button", {
+            type: "button",
+            className: "dg-branch-pick",
+            // Remote-tracking refs are reference-only: checking one out directly
+            // would leave a detached HEAD, which is never what the click means.
+            disabled: isCurrent === true || busy !== null || groupId === "remote",
+            title: isCurrent === true
+              ? t("branch.current.tag")
+              : groupId === "remote"
+                ? t("branch.remote.readonly", { branch: name })
+                : t("branch.switch.row", { branch: name }),
+            "aria-label": isCurrent === true
+              ? t("branch.current.aria", { branch: name })
+              : groupId === "remote"
+                ? t("branch.remote.readonly", { branch: name })
+                : t("branch.switch.row", { branch: name }),
+            onClick: function () {
+              if (isCurrent !== true && groupId !== "remote") switchTo(name);
+            },
+          },
+            h("span", { className: "dg-branch-dot" + (isCurrent === true ? " dg-branch-dot-current" : "") }),
+            h("span", { className: "dg-branch-name" }, name),
+            isCurrent === true ? h("span", { className: "dg-branch-check", "aria-hidden": "true" }, "\u2713") : null,
+            busy === "switch:" + name ? h("span", { className: "dg-branch-busy" }, t("changes.action.busy")) : null,
+            aheadEntry > 0 ? h("span", { className: "dg-chip-ahead" }, "\u2191" + String(aheadEntry)) : null,
+            behindEntry > 0 ? h("span", { className: "dg-chip-behind" }, "\u2193" + String(behindEntry)) : null),
+          groupId !== "local" ? null : h("span", { className: "dg-branch-actions" },
+            isCurrent === true
+              ? h("button", {
+                type: "button",
+                className: "dg-mini-btn",
+                disabled: true,
+                "aria-disabled": "true",
+                title: t("branch.delete.current"),
+                "aria-label": t("branch.delete.aria", { branch: name }),
+              }, t("branch.delete.button"))
+              : h(Fragment, null,
+                h("button", {
+                  type: "button",
+                  className: "dg-mini-btn",
+                  disabled: busy !== null,
+                  title: t("branch.rename.button"),
+                  "aria-label": t("branch.rename.aria", { branch: name }),
+                  onClick: function () {
+                    setForm({ create: form.create, rename: { name: name, value: name } });
+                  },
+                }, t("branch.rename.button")),
+                h("button", {
+                  type: "button",
+                  className: "dg-mini-btn dg-mini-btn-danger",
+                  disabled: busy !== null,
+                  title: t("branch.delete.button"),
+                  "aria-label": t("branch.delete.aria", { branch: name }),
+                  onClick: function () {
+                    setPendingDelete({ name: name, force: false, unmerged: false, message: "" });
+                  },
+                }, t("branch.delete.button")))));
+      }
+
+      const errorBar = actionError === null ? null : h("div", { className: "dg-notice dg-notice-error", role: "alert" },
+        h(AlertIcon, { className: "dg-error-icon" }),
+        h("span", { className: "dg-error-text" }, t(actionError.key, { message: actionError.message })),
+        actionError.retry === null || actionError.retry === undefined
+          ? null
+          : h("button", { type: "button", className: "dg-link-btn", onClick: actionError.retry }, t("branch.retry")));
+
+      const confirmDialog = pendingDelete === null ? null : h("div", {
+        className: "dg-pop-confirm",
+        role: "alertdialog",
+        "aria-label": t("branch.delete.confirmTitle", { branch: pendingDelete.name }),
+      },
+        h("div", { className: "dg-pop-confirm-title" },
+          pendingDelete.force === true
+            ? t("branch.delete.forceTitle", { branch: pendingDelete.name })
+            : t("branch.delete.confirmTitle", { branch: pendingDelete.name })),
+        h("div", { className: "dg-pop-confirm-body" },
+          pendingDelete.force === true ? t("branch.delete.forceBody") : t("branch.delete.confirmBody")),
+        pendingDelete.force === true && isNonEmptyString(pendingDelete.message)
+          ? h("div", { className: "dg-pop-confirm-body" }, t("branch.delete.failed", { message: pendingDelete.message }))
+          : null,
+        h("div", { className: "dg-pop-confirm-actions" },
+          h("button", {
+            type: "button",
+            className: "dg-btn",
+            onClick: function () {
+              setPendingDelete(null);
+            },
+          }, t("confirm.cancel")),
+          h("button", {
+            type: "button",
+            className: "dg-btn dg-btn-danger",
+            disabled: busy !== null,
+            onClick: function () {
+              deleteBranch(pendingDelete.name, pendingDelete.force === true);
+            },
+          }, pendingDelete.force === true ? t("branch.delete.forceButton") : t("branch.delete.confirmButton"))));
+
+      const currentSection = h("div", { className: "dg-pop-section dg-pop-current" },
+        h("div", { className: "dg-pop-section-title" }, t("branch.current.title")),
+        h("div", { className: "dg-pop-current-name" },
+          h("span", { className: "dg-chip-dot" + (stagedCount + unstagedCount + untrackedCount + conflictedCount > 0 ? " dg-chip-dot-dirty" : "") }),
+          h("span", { className: "dg-pop-branch", title: label }, label),
+          ahead > 0 ? h("span", { className: "dg-chip-ahead", title: t("chip.aheadTitle", { count: ahead }) }, "\u2191" + String(ahead)) : null,
+          behind > 0 ? h("span", { className: "dg-chip-behind", title: t("chip.behindTitle", { count: behind }) }, "\u2193" + String(behind)) : null,
+          upstream === ""
+            ? h("span", { className: "dg-pop-upstream dg-muted" }, t("chip.noUpstream"))
+            : h("span", { className: "dg-pop-upstream dg-muted", title: upstream }, upstream)),
+        h("div", { className: "dg-pop-summary" }, t("branch.summary", {
+          staged: stagedCount,
+          unstaged: unstagedCount,
+          untracked: untrackedCount,
+          conflicted: conflictedCount,
+        })));
+
+      const switchSection = h("div", { className: "dg-pop-section" },
+        h("div", { className: "dg-pop-section-title" }, t("branch.switch.title")),
+        local.length === 0 && remote.length === 0
+          ? h("div", { className: "dg-pop-empty" }, t("branch.noBranches"))
+          : h(Fragment, null,
+            local.length === 0 ? null : h("div", { className: "dg-pop-group-title" }, h("span", null, t("branch.local"))),
+            local.map(function (entry) { return renderBranchRow(entry, "local"); }),
+            remote.length === 0 ? null : h("div", { className: "dg-pop-group-title" }, h("span", null, t("branch.remote"))),
+            remote.map(function (entry) { return renderBranchRow(entry, "remote"); })));
+
+      const opsSection = h("div", { className: "dg-pop-section dg-pop-ops" },
+        h("div", { className: "dg-pop-section-title" }, t("branch.ops.title")),
+        h("div", { className: "dg-branch-create" },
+          h("input", {
+            className: "dg-pop-input",
+            value: form.create,
+            placeholder: t("branch.create.placeholder"),
+            title: t("branch.create.placeholder"),
+            "aria-label": t("branch.create.placeholder"),
+            onChange: function (event) {
+              const value = event.target.value;
+              setForm(function (previous) { return { create: value, rename: previous.rename }; });
+            },
+            onKeyDown: function (event) {
+              if (event.key !== "Enter") return;
+              if (typeof event.preventDefault === "function") event.preventDefault();
+              createBranch();
+            },
+          }),
+          h("button", {
+            type: "button",
+            className: "dg-btn",
+            disabled: busy !== null || form.create.trim() === "",
+            onClick: createBranch,
+          }, t("branch.create.button"))),
+        confirmDialog);
+
+      return h("div", { className: "dg-pop dg-branch-panel", role: "dialog", "aria-label": t("chip.popTitle") },
+        errorBar,
+        notice === null ? null : h("div", { className: "dg-notice dg-notice-success", role: "status" }, notice),
+        currentSection,
+        switchSection,
+        opsSection,
+        h("div", { className: "dg-pop-foot" }, t("chip.popHint")));
     }
 
     // -------------------------------------------------------------------------
@@ -1795,46 +2809,18 @@ function computeLanes(commits, options = {}) {
         : toCount(counts.staged) + toCount(counts.unstaged) + toCount(counts.untracked) + toCount(counts.conflicted);
       const label = detached ? t("chip.detached") : branchName;
 
-      const groups = [];
-      const pushGroup = function (key, labelKey, items) {
-        if (items.length === 0) return;
-        groups.push({ key: key, labelKey: labelKey, items: items });
-      };
-      pushGroup("staged", "changes.group.staged", Array.isArray(status.staged) ? status.staged : []);
-      pushGroup("unstaged", "changes.group.unstaged", Array.isArray(status.unstaged) ? status.unstaged : []);
-      pushGroup("untracked", "changes.group.untracked", Array.isArray(status.untracked) ? status.untracked : []);
-      pushGroup("conflicted", "changes.group.conflicted", Array.isArray(status.conflicted) ? status.conflicted : []);
-
       const ariaLabel = t("chip.aria", {
         branch: label,
         count: changeCount,
       });
 
       const popover = open
-        ? h("div", { className: "dg-pop", role: "dialog", "aria-label": t("chip.popTitle") },
-          h("div", { className: "dg-pop-head" },
-            h("span", { className: "dg-chip-dot" + (changeCount > 0 ? " dg-chip-dot-dirty" : "") }),
-            h("span", { className: "dg-pop-branch", title: label }, label),
-            ahead > 0 ? h("span", { className: "dg-chip-ahead", title: t("chip.aheadTitle", { count: ahead }) }, "↑" + String(ahead)) : null,
-            behind > 0 ? h("span", { className: "dg-chip-behind", title: t("chip.behindTitle", { count: behind }) }, "↓" + String(behind)) : null,
-            upstream === "" ? h("span", { className: "dg-pop-upstream dg-muted" }, t("chip.noUpstream")) : h("span", { className: "dg-pop-upstream dg-muted", title: upstream }, upstream)),
-          changeCount === 0
-            ? h("div", { className: "dg-pop-clean" }, t("chip.clean"))
-            : h("div", { className: "dg-pop-groups" }, groups.map(function (group) {
-              return h("div", { className: "dg-pop-group", key: group.key },
-                h("div", { className: "dg-pop-group-title" },
-                  h("span", null, t(group.labelKey)),
-                  h("span", { className: "dg-pop-group-count" }, String(group.items.length))),
-                group.items.slice(0, 8).map(function (item) {
-                  const meta = statusMeta(item !== null && typeof item === "object" ? item.status : undefined, group.key);
-                  const path = item !== null && typeof item === "object" && isNonEmptyString(item.path) ? item.path : "";
-                  return h("div", { className: "dg-pop-row", key: group.key + ":" + path, title: path },
-                    h("span", { className: "dg-badge dg-badge-" + meta.tone }, meta.letter),
-                    h("span", { className: "dg-pop-path" }, path));
-                }),
-                group.items.length > 8 ? h("div", { className: "dg-pop-more" }, t("chip.more", { count: group.items.length - 8 })) : null);
-            })),
-          h("div", { className: "dg-pop-foot" }, t("chip.popHint")))
+        ? h(BranchPanel, {
+          root: root,
+          status: status,
+          t: t,
+          onChanged: load,
+        })
         : null;
 
       return h("div", { className: "dg-chip-root", ref: rootRef },
@@ -2063,6 +3049,7 @@ function computeLanes(commits, options = {}) {
             cwd: root,
             t: t,
             refreshToken: token,
+            onChanged: refresh,
           });
       } else {
         content = h("div", { className: "dg-empty" },
@@ -2186,7 +3173,7 @@ function computeLanes(commits, options = {}) {
       ".dg-del{color:rgba(248,81,73,1)}",
       ".dg-diff-body{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.08))}",
       ".dg-hunk-block{font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;line-height:17px;min-width:max-content}",
-      ".dg-hunk{padding:1px 8px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.22));color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-hunk{display:flex;align-items:center;gap:6px;padding:1px 8px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.22));color:var(--dsw-alias-label-tertiary,#6e7781);position:sticky;left:0;width:max-content}",
       ".dg-diff-row{display:flex;align-items:flex-start;min-width:max-content}",
       ".dg-diff-row-add{background:rgba(46,160,67,.16)}",
       ".dg-diff-row-del{background:rgba(248,81,73,.16)}",
@@ -2238,31 +3225,85 @@ function computeLanes(commits, options = {}) {
       ".dg-chip:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:0}",
       ".dg-chip-dot{flex:none;width:7px;height:7px;border-radius:50%;background:#2da44e;box-shadow:0 0 0 2px rgba(46,160,67,.18)}",
       ".dg-chip-dot-dirty{background:#d29922;box-shadow:0 0 0 2px rgba(210,153,34,.2)}",
-      ".dg-chip-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11.5px}",
+      // The chip inherits the host header font: no monospace, 12px/18px like the neighbouring capsules.
+      ".dg-chip-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}",
       ".dg-chip-count{flex:none;min-width:16px;padding:0 4px;border-radius:8px;background:rgba(210,153,34,.18);color:#9a6700;font-size:11px;line-height:15px;text-align:center;font-variant-numeric:tabular-nums}",
       "body[data-ds-dark-theme] .dg-chip-count{background:rgba(227,179,65,.18);color:#e3b341}",
       ".dg-chip-ahead{flex:none;color:#1a7f37;font-size:11px;font-variant-numeric:tabular-nums}",
       "body[data-ds-dark-theme] .dg-chip-ahead{color:#56d364}",
       ".dg-chip-behind{flex:none;color:#cf222e;font-size:11px;font-variant-numeric:tabular-nums}",
       "body[data-ds-dark-theme] .dg-chip-behind{color:#ff7b72}",
-      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:60;box-sizing:border-box;width:320px;max-width:min(420px,80vw);max-height:min(440px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-specific-menu,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
-      ".dg-pop-head{display:flex;align-items:center;gap:6px;padding:2px 4px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
-      ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:12px;font-weight:600}",
+      // `--dsw-specific-menu` is a translucent menu layer (≈58% alpha) meant to be
+      // used together with a backdrop blur; on its own the content behind bleeds
+      // through, so the panel uses the opaque theme layer instead.
+      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:60;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
+      ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:12px;line-height:18px;font-weight:600;font-variant-numeric:tabular-nums}",
       ".dg-pop-upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin-left:auto}",
-      ".dg-pop-clean{padding:12px 4px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
-      ".dg-pop-groups{padding-top:6px}",
-      ".dg-pop-group{margin-bottom:6px}",
       ".dg-pop-group-title{display:flex;align-items:center;justify-content:space-between;padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;letter-spacing:.02em}",
       ".dg-pop-group-count{font-variant-numeric:tabular-nums}",
-      ".dg-pop-row{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:5px;min-width:0}",
-      ".dg-pop-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
-      ".dg-pop-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;unicode-bidi:plaintext}",
-      ".dg-pop-more{padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px}",
       ".dg-pop-foot{margin-top:4px;padding:6px 4px 2px;border-top:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px}",
       ".dg-title-icon{flex:none;width:16px;height:16px;color:var(--dsw-alias-label-secondary,#57606a)}",
       ".dg-title-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".dg-title-branch{flex:none;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;border-radius:5px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.2));color:var(--dsw-alias-label-secondary,#57606a);font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;line-height:16px}",
       ".dg-title-count{flex:none;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));color:var(--dsw-alias-label-secondary,#57606a);font-size:11px;line-height:15px;text-align:center;font-variant-numeric:tabular-nums}",
+      // Branch panel (header chip popover): current branch, switching and branch ops.
+      ".dg-branch-panel{width:340px;max-width:min(420px,84vw)}",
+      ".dg-pop-section{padding:6px 4px 4px;border-top:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
+      ".dg-pop-section:first-of-type{border-top:0}",
+      ".dg-pop-section-title{padding:0 4px 4px;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-pop-current-name{display:flex;align-items:center;gap:6px;padding:0 4px;min-width:0}",
+      ".dg-pop-summary{padding:3px 4px 0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#6e7781);overflow-wrap:anywhere}",
+      ".dg-branch-row{display:flex;align-items:center;gap:2px;border-radius:6px;min-width:0}",
+      ".dg-branch-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
+      ".dg-branch-pick{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;padding:3px 5px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;font-size:12px;line-height:18px;text-align:left;cursor:pointer}",
+      ".dg-branch-pick:disabled{cursor:default}",
+      ".dg-branch-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#6e7781);opacity:.55}",
+      ".dg-branch-dot-current{background:#2da44e;opacity:1;box-shadow:0 0 0 2px rgba(46,160,67,.18)}",
+      ".dg-branch-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}",
+      ".dg-branch-check{flex:none;color:#1a7f37;font-size:12px;line-height:18px}",
+      "body[data-ds-dark-theme] .dg-branch-check{color:#56d364}",
+      ".dg-branch-busy{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-branch-actions{display:inline-flex;gap:2px;flex:none;padding-right:2px}",
+      ".dg-branch-rename{display:flex;align-items:center;gap:4px;padding:3px 5px;min-width:0}",
+      ".dg-branch-create{display:flex;align-items:center;gap:4px;padding:2px 4px}",
+      ".dg-pop-input{flex:1 1 auto;min-width:0;height:24px;padding:0 6px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:12px;outline:none}",
+      ".dg-pop-input:focus{border-color:var(--dsw-alias-border-l2,rgba(0,0,0,.22))}",
+      ".dg-pop-empty{padding:4px;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-pop-confirm{margin:6px 4px 0;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.16));border-radius:8px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));font-size:11px;line-height:16px}",
+      ".dg-pop-confirm-title{font-weight:600;color:var(--dsw-alias-label-primary,#1f2328)}",
+      ".dg-pop-confirm-body{margin-top:2px;color:var(--dsw-alias-label-secondary,#57606a);overflow-wrap:anywhere}",
+      ".dg-pop-confirm-actions{display:flex;justify-content:flex-end;gap:4px;margin-top:6px}",
+      ".dg-notice-info{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-secondary,#57606a)}",
+      // History: filter bar, log range vs. checkout, HEAD emphasis.
+      ".dg-history-filters{display:flex;align-items:center;gap:4px;padding:0 8px 6px;flex:none;flex-wrap:wrap}",
+      ".dg-filter-input{flex:1 1 0;min-width:58px;height:22px;padding:0 6px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:11px;outline:none}",
+      ".dg-filter-input::placeholder{color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-filter-input:focus{border-color:var(--dsw-alias-border-l2,rgba(0,0,0,.22))}",
+      ".dg-link-btn:disabled{opacity:.45;text-decoration:none;cursor:default}",
+      ".dg-filter-active{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-commit-row-head{background:rgba(247,129,102,.08)}",
+      ".dg-graph-dot-head{stroke-width:2.1}",
+      // Changes: directory tree, hunk actions, amend + recent commit messages.
+      ".dg-tree-dir{display:flex;flex-direction:column;min-width:0}",
+      ".dg-dir-row{display:flex;align-items:center;gap:4px;padding:3px 5px;border-radius:6px;cursor:pointer;min-width:0}",
+      ".dg-dir-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
+      ".dg-dir-row:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
+      ".dg-dir-caret{flex:none;width:10px;text-align:center;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:10px;line-height:14px}",
+      ".dg-dir-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary,#57606a);unicode-bidi:plaintext}",
+      ".dg-dir-count{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781);font-variant-numeric:tabular-nums}",
+      ".dg-tree-children{display:flex;flex-direction:column;min-width:0}",
+      ".dg-hunk-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-hunk-actions{display:inline-flex;gap:3px;flex:none}",
+      ".dg-hunk-btn{padding:0 5px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:5px;background:var(--dsw-specific-menu,transparent);color:var(--dsw-alias-label-secondary,#57606a);font:inherit;font-family:inherit;font-size:10px;line-height:15px;white-space:nowrap;cursor:pointer}",
+      ".dg-hunk-btn:hover:not(:disabled){background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));color:var(--dsw-alias-label-primary,#1f2328)}",
+      ".dg-hunk-btn:disabled{opacity:.5;cursor:default}",
+      ".dg-commit-options{display:flex;align-items:center;gap:6px;flex-wrap:wrap}",
+      ".dg-amend{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary,#57606a);cursor:pointer;flex:none}",
+      ".dg-amend-check{width:12px;height:12px;margin:0}",
+      ".dg-commit-history{display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0}",
+      ".dg-commit-history-title{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-history-chip{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 6px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:10px;background:transparent;color:var(--dsw-alias-label-secondary,#57606a);font:inherit;font-size:11px;line-height:16px;cursor:pointer}",
+      ".dg-history-chip:hover{background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28))}",
     ].join("\n");
 
     /** Install the stylesheet once per document; repeated loads refresh its text. */
@@ -2309,12 +3350,48 @@ function computeLanes(commits, options = {}) {
       "chip.aria": "Git 分支 {branch}，{count} 项变更",
       "chip.detached": "游离 HEAD",
       "chip.noUpstream": "无上游",
-      "chip.clean": "工作区干净，没有待提交的变更。",
       "chip.popTitle": "源代码管理",
       "chip.popHint": "在右侧栏「源代码管理」中查看完整变更与提交历史。",
       "chip.aheadTitle": "领先上游 {count} 个提交",
       "chip.behindTitle": "落后上游 {count} 个提交",
-      "chip.more": "还有 {count} 项…",
+      // Header chip popover: branch panel.
+      "branch.current.title": "当前分支",
+      "branch.current.tag": "当前分支",
+      "branch.current.aria": "当前分支 {branch}",
+      "branch.summary": "已暂存 {staged} · 变更 {unstaged} · 未跟踪 {untracked} · 冲突 {conflicted}",
+      "branch.switch.title": "切换分支",
+      "branch.switch.row": "切换到 {branch}",
+      "branch.switch.success": "已切换到 {branch}",
+      "branch.switch.failed": "切换分支失败：{message}",
+      "branch.local": "本地分支",
+      "branch.remote": "远端分支",
+      "branch.remote.readonly": "远端分支 {branch}（只读，需先创建本地跟踪分支）",
+      "branch.noBranches": "没有可切换的分支",
+      "branch.ops.title": "分支操作",
+      "branch.create.placeholder": "新分支名",
+      "branch.create.button": "创建分支",
+      "branch.create.success": "已创建分支 {branch}",
+      "branch.create.failed": "创建分支失败：{message}",
+      "branch.name.empty": "请先输入分支名",
+      "branch.rename.button": "重命名",
+      "branch.rename.aria": "重命名分支 {branch}",
+      "branch.rename.placeholder": "新的分支名",
+      "branch.rename.confirm": "确定",
+      "branch.rename.cancel": "取消",
+      "branch.rename.success": "已将 {from} 重命名为 {to}",
+      "branch.rename.failed": "重命名分支失败：{message}",
+      "branch.delete.button": "删除",
+      "branch.delete.aria": "删除分支 {branch}",
+      "branch.delete.current": "不能删除当前分支",
+      "branch.delete.confirmTitle": "删除分支 {branch}？",
+      "branch.delete.confirmBody": "该分支上的提交将不再被引用，未合并的提交可能丢失。",
+      "branch.delete.confirmButton": "删除分支",
+      "branch.delete.forceTitle": "分支 {branch} 尚未合并",
+      "branch.delete.forceBody": "强制删除会丢弃该分支上尚未合并的提交，且无法恢复。",
+      "branch.delete.forceButton": "强制删除",
+      "branch.delete.success": "已删除分支 {branch}",
+      "branch.delete.failed": "删除分支失败：{message}",
+      "branch.retry": "重试",
       "guide.description": "查看分支、工作区变更与提交历史，暂存、放弃并提交更改",
       "tabs.aria": "Git 视图切换",
       "tabs.changes": "变更",
@@ -2354,6 +3431,18 @@ function computeLanes(commits, options = {}) {
       "changes.action.busy": "处理中…",
       "changes.action.failed": "操作失败：{message}",
       "changes.row.open": "查看 {path} 的差异",
+      "changes.amend": "修补上一个提交",
+      "changes.amend.hint": "用当前暂存内容替换上一个提交，提交信息可改写",
+      "changes.amend.button": "修补提交",
+      "changes.amend.success": "已修补提交 {sha}",
+      "changes.commitHistory": "最近提交信息",
+      "changes.tree.toggle": "折叠或展开 {path}",
+      "changes.tree.collapsed": "所有目录都已折叠，点击目录可展开",
+      "changes.hunk.stage": "暂存此块",
+      "changes.hunk.unstage": "取消暂存此块",
+      "changes.hunk.staged": "已暂存该块",
+      "changes.hunk.unstaged": "已取消暂存该块",
+      "changes.hunk.failed": "操作失败：{message}",
       "confirm.discard.title": "放弃这些更改？",
       "confirm.discard.tracked": "将丢弃 {path} 中未暂存的修改，且无法恢复。",
       "confirm.discard.untracked": "将删除未跟踪的文件 {path}，且无法恢复。",
@@ -2369,7 +3458,18 @@ function computeLanes(commits, options = {}) {
       "diff.mode.staged": "已暂存",
       "diff.mode.untracked": "未跟踪",
       "diff.mode.commit": "提交",
-      "history.branch": "分支",
+      "history.refRange": "日志范围",
+      "history.checkout.button": "切换到此分支",
+      "history.checkout.title": "切换到 {branch}",
+      "history.checkout.hint": "先在「日志范围」里选择一个分支",
+      "history.filter.grep": "筛选提交信息",
+      "history.filter.author": "筛选作者",
+      "history.filter.path": "筛选路径",
+      "history.filter.clear": "清除",
+      "history.filter.active": "已过滤",
+      "history.empty.filtered": "没有符合过滤条件的提交",
+      "history.lanes.truncated": "分支泳道过多，只显示前 {max} 条分支线",
+      "graph.headLabel": "当前 HEAD 所在的提交",
       "history.head": "HEAD（当前分支）",
       "history.loading": "正在加载提交…",
       "history.loadMore": "正在加载更多…",
@@ -2415,12 +3515,48 @@ function computeLanes(commits, options = {}) {
       "chip.aria": "Git branch {branch}, {count} changes",
       "chip.detached": "detached HEAD",
       "chip.noUpstream": "no upstream",
-      "chip.clean": "Working tree clean, nothing to commit.",
       "chip.popTitle": "Source Control",
       "chip.popHint": "Open the Source Control tab in the right sidebar for the full change list and history.",
       "chip.aheadTitle": "{count} commits ahead of upstream",
       "chip.behindTitle": "{count} commits behind upstream",
-      "chip.more": "{count} more…",
+      // Header chip popover: branch panel.
+      "branch.current.title": "Current branch",
+      "branch.current.tag": "Current",
+      "branch.current.aria": "Current branch {branch}",
+      "branch.summary": "Staged {staged} · Changes {unstaged} · Untracked {untracked} · Conflicts {conflicted}",
+      "branch.switch.title": "Switch branch",
+      "branch.switch.row": "Switch to {branch}",
+      "branch.switch.success": "Switched to {branch}",
+      "branch.switch.failed": "Could not switch branch: {message}",
+      "branch.local": "Local branches",
+      "branch.remote": "Remote branches",
+      "branch.remote.readonly": "Remote branch {branch} (read-only; create a local tracking branch first)",
+      "branch.noBranches": "No branches to switch to",
+      "branch.ops.title": "Branch actions",
+      "branch.create.placeholder": "New branch name",
+      "branch.create.button": "Create branch",
+      "branch.create.success": "Created branch {branch}",
+      "branch.create.failed": "Could not create branch: {message}",
+      "branch.name.empty": "Enter a branch name first",
+      "branch.rename.button": "Rename",
+      "branch.rename.aria": "Rename branch {branch}",
+      "branch.rename.placeholder": "New branch name",
+      "branch.rename.confirm": "Confirm",
+      "branch.rename.cancel": "Cancel",
+      "branch.rename.success": "Renamed {from} to {to}",
+      "branch.rename.failed": "Could not rename branch: {message}",
+      "branch.delete.button": "Delete",
+      "branch.delete.aria": "Delete branch {branch}",
+      "branch.delete.current": "The current branch cannot be deleted",
+      "branch.delete.confirmTitle": "Delete branch {branch}?",
+      "branch.delete.confirmBody": "No ref will point at this branch's commits; unmerged work may be lost.",
+      "branch.delete.confirmButton": "Delete branch",
+      "branch.delete.forceTitle": "Branch {branch} is not merged",
+      "branch.delete.forceBody": "Force deleting drops the unmerged commits on that branch; this cannot be undone.",
+      "branch.delete.forceButton": "Force delete",
+      "branch.delete.success": "Deleted branch {branch}",
+      "branch.delete.failed": "Could not delete branch: {message}",
+      "branch.retry": "Retry",
       "guide.description": "Review branches, working-tree changes and commit history; stage, discard and commit",
       "tabs.aria": "Git view switcher",
       "tabs.changes": "Changes",
@@ -2460,6 +3596,18 @@ function computeLanes(commits, options = {}) {
       "changes.action.busy": "Working…",
       "changes.action.failed": "Action failed: {message}",
       "changes.row.open": "Show the diff of {path}",
+      "changes.amend": "Amend the previous commit",
+      "changes.amend.hint": "Replace the previous commit with the current index; its message can be rewritten",
+      "changes.amend.button": "Amend commit",
+      "changes.amend.success": "Amended {sha}",
+      "changes.commitHistory": "Recent messages",
+      "changes.tree.toggle": "Collapse or expand {path}",
+      "changes.tree.collapsed": "All directories are collapsed; click a directory to expand it",
+      "changes.hunk.stage": "Stage this hunk",
+      "changes.hunk.unstage": "Unstage this hunk",
+      "changes.hunk.staged": "Hunk staged",
+      "changes.hunk.unstaged": "Hunk unstaged",
+      "changes.hunk.failed": "Action failed: {message}",
       "confirm.discard.title": "Discard these changes?",
       "confirm.discard.tracked": "Unstaged modifications in {path} will be thrown away and cannot be recovered.",
       "confirm.discard.untracked": "The untracked file {path} will be deleted and cannot be recovered.",
@@ -2475,7 +3623,18 @@ function computeLanes(commits, options = {}) {
       "diff.mode.staged": "Staged",
       "diff.mode.untracked": "Untracked",
       "diff.mode.commit": "Commit",
-      "history.branch": "Branch",
+      "history.refRange": "Log range",
+      "history.checkout.button": "Switch to this branch",
+      "history.checkout.title": "Switch to {branch}",
+      "history.checkout.hint": "Pick a branch in the log range first",
+      "history.filter.grep": "Filter messages",
+      "history.filter.author": "Filter author",
+      "history.filter.path": "Filter path",
+      "history.filter.clear": "Clear",
+      "history.filter.active": "Filtered",
+      "history.empty.filtered": "No commits match the filters",
+      "history.lanes.truncated": "Too many branch lanes; only the first {max} are drawn",
+      "graph.headLabel": "The commit HEAD points at",
       "history.head": "HEAD (current branch)",
       "history.loading": "Loading commits…",
       "history.loadMore": "Loading more…",
@@ -2600,13 +3759,30 @@ function computeLanes(commits, options = {}) {
         GitBody: GitBody,
         GitTitle: GitTitle,
         GitBranchChip: GitBranchChip,
+        BranchPanel: BranchPanel,
+        CommitGraph: CommitGraph,
         computeLanes: computeLanes,
         LANE_COLORS: LANE_COLORS,
+        GRAPH_HEAD_COLOR: GRAPH_HEAD_COLOR,
+        GRAPH_MAX_LANES: GRAPH_MAX_LANES,
+        GRAPH_ROW_HEIGHT: GRAPH_ROW_HEIGHT,
+        GRAPH_LANE_WIDTH: GRAPH_LANE_WIDTH,
         refTone: refTone,
         ChangesPane: ChangesPane,
         DiffView: DiffView,
         HistoryPane: HistoryPane,
         CommitDetail: CommitDetail,
+        buildChangeTree: buildChangeTree,
+        collectTreeDirs: collectTreeDirs,
+        countTreeFiles: countTreeFiles,
+        buildHunkPatch: buildHunkPatch,
+        hunkBodyText: hunkBodyText,
+        headShaOf: headShaOf,
+        readCommitHistory: readCommitHistory,
+        rememberCommitMessage: rememberCommitMessage,
+        COMMIT_HISTORY_KEY: COMMIT_HISTORY_KEY,
+        COMMIT_HISTORY_MAX: COMMIT_HISTORY_MAX,
+        CSS_TEXT: CSS_TEXT,
         POLL_MS: POLL_MS,
         LOG_LIMIT: LOG_LIMIT,
       }

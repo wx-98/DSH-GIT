@@ -149,3 +149,56 @@ $ node --test test/host.test.js test/client.test.js test/graph-lanes.test.js
 
 - 提交图按页（每页 50 条）计算泳道，跨页的分支线在翻页处重新起线（列号仍稳定，不会错位）。
 - 头部芯片 10s 轮询一次（面板可见时 4s），不推送事件。
+
+## 8. 0.3.0：git-idea-parity（OpenSpec 变更）验收
+
+变更：`openspec/changes/git-idea-parity/`（proposal / 4 份 delta spec / design / tasks 共 30 项，已全部勾选）。
+目标 DSH：0.2.1-rc.5。
+
+### 8.1 自动化测试
+
+```
+$ node --test test/host.test.js test/client.test.js test/graph-lanes.test.js
+ℹ tests 112
+ℹ pass 112
+ℹ fail 0
+```
+
+- `test/host.test.js` 41 项（原 24 + 17）：stats / apply-hunk（单块暂存、取消暂存、上下文失配 409 且索引不变、1 MiB 413）
+  / amend / 分支增删改（当前分支 409、未合并需 force）/ stash 五操作（含 pop 冲突保留条目）/ log 过滤 / 新路由栅栏。
+- `test/client.test.js` 51 项（原 33 + 18）：芯片字体继承、分支面板（分组/勾选/切换/失败错误条）、分支增删改、
+  日志范围与切换分离、HEAD 大圆点+环、历史过滤、目录树、文件统计、hunk 按钮与补丁重建、amend 与提交信息历史、i18n 键集。
+- `test/graph-lanes.test.js` 20 项（原 16 + 4）：HEAD 生命线使用保留色、并存泳道不重色、分支生命线颜色稳定、超调色板回退。
+
+### 8.2 真实实例端到端（安装后自检）
+
+```
+$ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."
+全部通过（共 24 项）
+```
+
+新增覆盖：`GET /git/stats`、`POST /git/apply-hunk`、`POST /git/amend`、`POST /git/branches`（含拒绝删除当前分支）、
+`GET/POST /git/stash` 全链路、`GET /git/log` 的 grep/author/path 过滤与无匹配空页。
+
+### 8.3 浏览器 UI 回归（headless Chrome + CDP，真实点击）
+
+| 检查 | 结果 |
+|---|---|
+| 芯片字体与相邻头部元素完全一致（family/12px/400/18px） | ✅ 计算样式比对 |
+| 芯片弹层为分支面板（不透明背景、当前分支段 + 切换分支 + 分支操作） | ✅ [截图](ui-branch-panel.png) |
+| 通过 UI 创建分支 `demo/ui-check` → 芯片立即变为该分支 | ✅ |
+| 点击 `main` 行切回 → 芯片与面板同步 | ✅ |
+| 删除分支：二次确认弹层 → 删除成功、面板刷新 | ✅ |
+| 变更列表为可折叠目录树 + 每文件 `+N/-N` + amend 开关 | ✅ [截图](ui-changes-tree.png) |
+| diff 每个 hunk 带「暂存此块」，按钮在横向滚动时仍完整可见 | ✅ [截图](ui-hunk-actions.png) |
+| 历史视图：过滤栏 + 「切换到此分支」+ HEAD 大圆点与环 | ✅ |
+| 真实分叉仓库上的多色泳道（HEAD 生命线强调色 + 分支调色板色） | ✅ [截图](ui-git-graph.png) |
+
+分叉仓库验证用临时 workspace 挂到独立 web 实例，验证后已还原 workspace 注册表并删除临时仓库。
+
+### 8.4 已知限制（本变更内）
+
+- 远端分支在切换列表中为**只读**（直接 checkout 会进入 detached HEAD），需要先创建本地跟踪分支（未实现创建跟踪动作）。
+- 泳道截断提示为启发式（`maxLanes >= GRAPH_MAX_LANES`），算法本身不返回截断标志。
+- hunk 补丁不包含 `\ No newline at end of file` 标记；无结尾换行的文件在 hunk 暂存时可能需要手动处理。
+- 网络操作（fetch/pull/push）、冲突解决界面、rebase、blame、并排 diff 不在本变更范围内。

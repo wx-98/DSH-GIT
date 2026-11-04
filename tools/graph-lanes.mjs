@@ -56,6 +56,13 @@ export const DEFAULT_MAX_LANES = 12;
 /** Number of distinct colour indexes handed out before the palette wraps. */
 export const PALETTE_SIZE = 8;
 
+/**
+ * Colour slot reserved for the branch life that contains HEAD. It sits one past
+ * the last palette entry so it never collides with a regular lane colour; a
+ * renderer maps it to its accent colour.
+ */
+export const HEAD_COLOR = PALETTE_SIZE;
+
 const NO_PARENTS = Object.freeze([]);
 
 /* ------------------------------------------------------------------------ */
@@ -142,7 +149,8 @@ function clampColumn(value, width) {
  * Lay out the commit graph lanes for a page of commits (newest → oldest).
  *
  * @param {Array<{ sha?: string, parents?: string[] }>} commits
- * @param {{ maxLanes?: number }} [options]
+ * @param {{ maxLanes?: number, headSha?: string }} [options] `headSha` marks the
+ *   branch life that contains HEAD so it can use `HEAD_COLOR` end to end.
  * @returns {{
  *   maxLanes: number,
  *   rows: Array<{
@@ -159,6 +167,7 @@ function clampColumn(value, width) {
  */
 export function computeLanes(commits, options = {}) {
   const limit = normalizeMaxLanes(options && typeof options === "object" ? options.maxLanes : undefined);
+  const headSha = options && typeof options === "object" && typeof options.headSha === "string" ? options.headSha : "";
   const list = Array.isArray(commits) ? commits : [];
 
   /** `lanes[i]` = sha the column `i` expects next, or `null` when the slot is free. */
@@ -187,7 +196,7 @@ export function computeLanes(commits, options = {}) {
         colors.push(null);
       }
       lanes[lane] = sha;
-      colors[lane] = allocColor(lanes, colors);
+      colors[lane] = headSha !== "" && sha === headSha ? HEAD_COLOR : allocColor(lanes, colors);
       isNewColumn = true;
     }
     const dotColor = typeof colors[lane] === "number" ? colors[lane] : 0;
@@ -282,6 +291,7 @@ export function computeLanes(commits, options = {}) {
       exits: exits.filter((exit) => exit.col < width),
       merges: merges.filter((merge) => merge.from < width && merge.to < width),
       color: dotColor,
+      isHead: headSha !== "" && sha === headSha,
       laneColors: [],
     };
     for (let i = 0; i < width; i += 1) {

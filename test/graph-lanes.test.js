@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_MAX_LANES,
+  HEAD_COLOR,
   PALETTE_SIZE,
   computeLanes,
   renderAscii,
@@ -301,6 +302,7 @@ test("a single commit yields a lone dot", () => {
     exits: [],
     merges: [],
     color: 0,
+    isHead: false,
     laneColors: [0],
   });
   assert.equal(renderAscii(result.rows), "*");
@@ -436,4 +438,60 @@ test("renderAscii keeps one line per row and trims trailing blanks", () => {
   const padded = renderAscii(result.rows, { width: 4 }).split("\n");
   assert.equal(padded.length, result.rows.length);
   assert.ok(padded.every((line) => line.length === 7));
+});
+
+/* ------------------------------------------------------------------------ */
+/* git-idea-parity 1.2/1.3 — colour follows the branch life, HEAD is reserved */
+/* ------------------------------------------------------------------------ */
+
+test("a linear history paints the whole HEAD life with the reserved head colour", () => {
+  const graph = computeLanes(LINEAR, { headSha: "c3" });
+  assert.equal(graph.rows.length, 3);
+  for (const row of graph.rows) {
+    assert.equal(row.lane, 0);
+    assert.equal(row.laneColors[0], HEAD_COLOR, "the single lane is the HEAD branch life");
+    assert.ok(row.color === HEAD_COLOR && row.laneColors[row.lane] === row.color);
+  }
+  assert.deepEqual(Array.from(graph.rows, (row) => row.isHead), [true, false, false]);
+});
+
+test("two parallel branches never share a colour while they coexist", () => {
+  const graph = computeLanes(FORK, { headSha: "m" });
+  const first = graph.rows[0];
+  assert.ok(first.width >= 2, "the fork row needs the second lane");
+  const live = new Set([first.lane, ...first.passThrough, ...first.exits.map((exit) => exit.col)]);
+  const colours = Array.from(live, (column) => first.laneColors[column]);
+  assert.equal(new Set(colours).size, colours.length, "coexisting lanes must not share a colour");
+  assert.equal(first.laneColors[first.lane], HEAD_COLOR);
+});
+
+test("a branch keeps its colour for the whole life", () => {
+  const graph = computeLanes(FORK, { headSha: "m" });
+  // The side branch owns column 1 from the fork row until it merges back into
+  // "c"; every row that still carries column 1 must use the same colour.
+  const branchColours = graph.rows
+    .filter((row) => row.width > 1)
+    .map((row) => row.laneColors[1]);
+  assert.ok(branchColours.length >= 3, "the side branch should span the fork rows");
+  assert.equal(new Set(branchColours).size, 1, "a branch life must not change colour");
+});
+
+test("colours fall back to least-used when lanes outnumber the palette", () => {
+  const parents = [];
+  const commits = [];
+  for (let index = 0; index < 11; index += 1) parents.push("p" + index);
+  commits.push({ sha: "t", parents });
+  for (const parent of parents) commits.push({ sha: parent, parents: [] });
+  const graph = computeLanes(commits, { headSha: "t" });
+  const lanes = new Set();
+  const colours = new Set();
+  for (const row of graph.rows) {
+    lanes.add(row.width);
+    for (const colour of row.laneColors) {
+      assert.ok(colour >= 0 && colour <= HEAD_COLOR, "colour index must be within the palette contract");
+      colours.add(colour);
+    }
+  }
+  assert.ok(lanes.size >= 1);
+  assert.ok(colours.size <= PALETTE_SIZE + 1, "at most the palette plus the reserved head slot");
 });

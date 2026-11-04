@@ -414,3 +414,90 @@ Diff 视图在同一面板内**覆盖**列表区域（顶部「← 返回」按�
      断言 HTML 含 \`dg-\` 与 "Git"；
   5. 纯函数单测（diff 行分类、状态字母映射、相对时间、basename）。
 - 全部测试：\`node --test test/\` 全绿。
+
+---
+
+## 1.5 本轮新增路由（git-idea-parity）
+
+> 只新增，不改既有路由签名。全部沿用 1.2 的错误码表、连接栅栏与写操作串行队列。
+> 写操作 body 上限 64 KiB，**`POST /git/apply-hunk` 例外为 1 MiB**（补丁体）。
+
+### GET /git/stats?root=<abs>
+
+一次取回工作区全部文件的行数统计，避免逐文件请求。
+
+```jsonc
+{
+  "ok": true,
+  "staged":   { "src/a.ts": { "additions": 3, "deletions": 1, "binary": false } },
+  "unstaged": { "src/b.ts": { "additions": 0, "deletions": 4, "binary": false } }
+}
+```
+
+- `staged` 来自 `git diff --cached --numstat`，`unstaged` 来自 `git diff --numstat`；未跟踪文件不出现在响应里（客户端留空）。
+- 二进制文件 `additions`/`deletions` 为 `null`，`binary: true`。
+
+### POST /git/apply-hunk
+
+```json
+{ "root": "D:/repo", "path": "src/a.ts", "direction": "stage", "patch": "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,4 @@\n..." }
+```
+
+→ `{ "ok": true }`
+
+- `direction` 为 `stage`（`git apply --cached`）或 `unstage`（`git apply --cached --reverse`）。
+- 补丁 MUST 只含**一个 hunk**，且 `diff --git` 路径与 `path` 一致，否则 400。
+- 应用失败（上下文失配等）→ **409 `conflict`**，索引与工作区都不改变（`git apply` 原子）。
+- 行尾统一为 `\n` 后应用；失败且 stderr 提示空白问题时带 `--ignore-whitespace` 重试一次。
+
+### POST /git/amend
+
+```json
+{ "root": "D:/repo", "message": "fix: 修正上个提交" }
+```
+
+→ `{ "ok": true, "sha": "<40 hex>", "shortSha": "<7 hex>" }`；空消息 400；无 HEAD 时 409。
+
+### POST /git/branches
+
+```json
+{ "root": "D:/repo", "action": "create", "name": "feature/x" }
+{ "root": "D:/repo", "action": "delete", "name": "feature/x", "force": false }
+{ "root": "D:/repo", "action": "rename", "name": "old", "newName": "new" }
+```
+
+→ `{ "ok": true, "name": "feature/x" }`（rename 时 `name` 为新名）
+
+- `create`：`git switch -c <name>`（基于当前 HEAD）。
+- `delete`：`git branch -d`，`force: true` 时 `-D`；删除**当前分支** → 409 `conflict`；未合并且未 force → 422 `git-failed`。
+- `rename`：`git branch -m <name> <newName>`。
+- 分支名校验：非空、无空白、不以 `-` 开头、不含 NUL。
+
+### GET /git/stash?root=<abs> 与 POST /git/stash
+
+```jsonc
+// GET
+{ "ok": true, "entries": [ { "index": 0, "ref": "stash@{0}", "message": "WIP on main: abc123", "date": "2026-11-04T14:00:00+08:00" } ] }
+```
+
+```json
+{ "root": "D:/repo", "action": "create", "message": "可选说明" }
+{ "root": "D:/repo", "action": "apply" | "pop" | "drop", "index": 0 }
+```
+
+→ `{ "ok": true, "entries": [...] }`（返回操作后的列表）
+
+- `apply`/`pop` 冲突时：`pop` MUST 不清空 stash；返回 409 `conflict` 并附 git 摘要。
+- `drop` 需要 `confirm: true`；缺省 400。
+
+### GET /git/log 的过滤参数
+
+在既有参数之外新增（全部可选，组合生效）：
+
+| 参数 | git 选项 | 说明 |
+|---|---|---|
+| `grep` | `--grep=<v>` | 提交信息包含 |
+| `author` | `--author=<v>` | 作者匹配 |
+| `path` | `-- <v>` | 只列改动该路径的提交（仓库相对路径，越界 400） |
+
+无匹配返回 `{ ok:true, commits: [], hasMore:false }`。

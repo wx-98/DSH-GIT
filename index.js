@@ -15,6 +15,9 @@ import * as fs from "node:fs/promises";
 import {
   GitError,
   LOG_LIMIT_DEFAULT,
+  amendCommit,
+  applyHunk,
+  branchAction,
   checkoutBranch,
   commitStaged,
   discardPaths,
@@ -23,9 +26,12 @@ import {
   readCommit,
   readDiff,
   readLog,
+  readStash,
+  readStats,
   readStatus,
   resolveRepo,
   stagePaths,
+  stashAction,
   unstagePaths,
 } from "./lib/git.js";
 
@@ -40,6 +46,9 @@ const PLUGIN_NAME = "dsh-git";
 
 /** Hard cap for JSON request bodies: 64 KiB (contract 1.2). */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/** POST /git/apply-hunk carries a patch, so its cap is 1 MiB (contract 1.5). */
+const MAX_HUNK_BODY_BYTES = 1024 * 1024;
 
 /** Wire error code -> HTTP status (contract 1.2). */
 const STATUS_BY_CODE = Object.freeze({
@@ -163,24 +172,26 @@ function drainRequest(req) {
 /**
  * Read and parse a JSON object body (contract 1.2).
  *
- * Enforces the 64 KiB cap and the application/json content type. The request
+ * Enforces the body cap (64 KiB, or the caller supplied cap for the hunk patch
+ * route, contract 1.5) and the application/json content type. The request
  * stream is always drained so even a rejected body gets its response.
  *
  * @param {import("node:http").IncomingMessage} req
+ * @param {number} [maxBytes] body cap, defaults to MAX_BODY_BYTES
  * @returns {Promise<Record<string, unknown>>}
  */
-async function readJsonBody(req) {
+async function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   const contentType = String(req.headers["content-type"] === undefined ? "" : req.headers["content-type"]).trim();
   const hasJsonContentType = /^application\/json(?:\s*;|$)/i.test(contentType);
   const declaredLength = Number(req.headers["content-length"]);
   const chunks = [];
   let total = 0;
-  let tooLarge = Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES;
+  let tooLarge = Number.isFinite(declaredLength) && declaredLength > maxBytes;
   await new Promise((resolve, reject) => {
     req.on("data", (chunk) => {
       total += chunk.length;
       if (tooLarge) return;
-      if (total > MAX_BODY_BYTES) {
+      if (total > maxBytes) {
         tooLarge = true;
         chunks.length = 0;
         return;
@@ -190,7 +201,7 @@ async function readJsonBody(req) {
     req.on("end", resolve);
     req.on("error", reject);
   });
-  if (tooLarge) throw new HttpError(413, "bad-request", "Request body exceeds " + MAX_BODY_BYTES + " bytes");
+  if (tooLarge) throw new HttpError(413, "bad-request", "Request body exceeds " + maxBytes + " bytes");
   if (!hasJsonContentType) {
     throw new HttpError(415, "bad-request", 'Content-Type must be "application/json"');
   }
@@ -317,6 +328,34 @@ async function handleDiff(req, res) {
 }
 
 /**
+ * GET /git/stats - batch line counters for the whole work tree (contract 1.5).
+ *
+ * A read-only route, so it is never queued.
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleStats(req, res) {
+  const url = parseRequestUrl(req);
+  const target = await requireRepo(requireQuery(url, "root"));
+  const stats = await readStats(target.toplevel);
+  sendJson(res, 200, { ok: true, staged: stats.staged, unstaged: stats.unstaged });
+}
+
+/**
+ * GET /git/stash - list stash entries (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleStashList(req, res) {
+  const url = parseRequestUrl(req);
+  const target = await requireRepo(requireQuery(url, "root"));
+  const stash = await readStash(target.toplevel);
+  sendJson(res, 200, { ok: true, entries: stash.entries });
+}
+
+/**
  * GET /git/log - one page of history (contract 1.3).
  *
  * @param {import("node:http").IncomingMessage} req
@@ -328,10 +367,18 @@ async function handleLog(req, res) {
   const ref = url.searchParams.get("ref");
   const limit = url.searchParams.get("limit");
   const skip = url.searchParams.get("skip");
+  // Optional filters added by contract 1.5; absent parameters stay undefined so
+  // lib/git.js can tell "no filter" from a malformed empty value.
+  const grep = url.searchParams.get("grep");
+  const author = url.searchParams.get("author");
+  const filterPath = url.searchParams.get("path");
   const page = await readLog(target.toplevel, {
     ref: ref === null ? "HEAD" : ref,
     limit: limit === null ? LOG_LIMIT_DEFAULT : limit,
     skip: skip === null ? 0 : skip,
+    grep: grep === null ? undefined : grep,
+    author: author === null ? undefined : author,
+    path: filterPath === null ? undefined : filterPath,
   });
   sendJson(res, 200, { ok: true, ref: page.ref, hasMore: page.hasMore, commits: page.commits });
 }
@@ -456,6 +503,121 @@ async function handleCheckout(req, res) {
 }
 
 /**
+ * POST /git/apply-hunk - stage or unstage one hunk (contract 1.5).
+ *
+ * The body carries a patch, so this is the one route with the 1 MiB cap.
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleApplyHunk(req, res) {
+  const body = await readJsonBody(req, MAX_HUNK_BODY_BYTES);
+  const target = await requireRepo(body.root);
+  await enqueueMutation(() => applyHunk(target.toplevel, body));
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * POST /git/amend - rewrite the last commit (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleAmend(req, res) {
+  const body = await readJsonBody(req);
+  const target = await requireRepo(body.root);
+  const result = await enqueueMutation(() => amendCommit(target.toplevel, body));
+  sendJson(res, 200, { ok: true, sha: result.sha, shortSha: result.shortSha });
+}
+
+/**
+ * POST /git/branches - create, delete or rename a branch (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleBranchAction(req, res) {
+  const body = await readJsonBody(req);
+  const target = await requireRepo(body.root);
+  const branch = await enqueueMutation(() => branchAction(target.toplevel, body));
+  sendJson(res, 200, { ok: true, name: branch.name });
+}
+
+/**
+ * POST /git/stash - create, apply, pop or drop a stash entry (contract 1.5).
+ *
+ * "drop" throws away work, so it needs the same explicit "confirm: true" as
+ * discardPaths (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleStashMutation(req, res) {
+  const body = await readJsonBody(req);
+  if (body.action === "drop" && body.confirm !== true) {
+    throw new GitError("bad-request", '"confirm" must be true to drop a stash entry');
+  }
+  const target = await requireRepo(body.root);
+  const stash = await enqueueMutation(() => stashAction(target.toplevel, body));
+  sendJson(res, 200, { ok: true, entries: stash.entries });
+}
+
+/**
+ * Shared handler for "/git/branches".
+ *
+ * The DSH web server rejects two routes that share the same (kind, path) pair,
+ * so the list (GET) and the create/delete/rename (POST) forms are served by one
+ * exact registration that dispatches on the request method (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleBranchesRoute(req, res) {
+  if (req.method === "GET") {
+    await handleBranches(req, res);
+    return;
+  }
+  if (req.method === "POST") {
+    await handleBranchAction(req, res);
+    return;
+  }
+  await drainRequest(req);
+  res.setHeader("allow", "GET, POST");
+  sendJson(res, 405, {
+    ok: false,
+    code: "bad-request",
+    message: "Method " + String(req.method) + " is not allowed",
+  });
+}
+
+/**
+ * Shared handler for "/git/stash".
+ *
+ * One registration serves GET (list) and POST (create/apply/pop/drop), for the
+ * same composition reason as "/git/commit" and "/git/branches" (contract 1.5).
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ */
+async function handleStashRoute(req, res) {
+  if (req.method === "GET") {
+    await handleStashList(req, res);
+    return;
+  }
+  if (req.method === "POST") {
+    await handleStashMutation(req, res);
+    return;
+  }
+  await drainRequest(req);
+  res.setHeader("allow", "GET, POST");
+  sendJson(res, 405, {
+    ok: false,
+    code: "bad-request",
+    message: "Method " + String(req.method) + " is not allowed",
+  });
+}
+
+/**
  * Shared handler for "/git/commit".
  *
  * The DSH web server rejects two routes that share the same (kind, path) pair,
@@ -505,17 +667,22 @@ async function handleUnknown(req, res) {
 // ---------------------------------------------------------------------------
 const ROUTES = Object.freeze([
   { method: "GET", path: PREFIX + "/status", handler: handleStatus },
+  { method: "GET", path: PREFIX + "/stats", handler: handleStats },
   { method: "GET", path: PREFIX + "/diff", handler: handleDiff },
   { method: "GET", path: PREFIX + "/log", handler: handleLog },
   // GET and POST share one registration: duplicate (kind, path) pairs are a
-  // composition error in the DSH web server, so the handler dispatches itself.
+  // composition error in the DSH web server, so these handlers dispatch
+  // themselves on req.method.
   { method: null, path: PREFIX + "/commit", handler: handleCommitRoute },
-  { method: "GET", path: PREFIX + "/branches", handler: handleBranches },
+  { method: null, path: PREFIX + "/branches", handler: handleBranchesRoute },
+  { method: null, path: PREFIX + "/stash", handler: handleStashRoute },
   { method: "GET", path: PREFIX + "/health", handler: handleHealth },
   { method: "POST", path: PREFIX + "/stage", handler: handleStage },
   { method: "POST", path: PREFIX + "/unstage", handler: handleUnstage },
   { method: "POST", path: PREFIX + "/discard", handler: handleDiscard },
   { method: "POST", path: PREFIX + "/checkout", handler: handleCheckout },
+  { method: "POST", path: PREFIX + "/apply-hunk", handler: handleApplyHunk },
+  { method: "POST", path: PREFIX + "/amend", handler: handleAmend },
 ]);
 
 /**

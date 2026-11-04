@@ -397,6 +397,118 @@ check("POST /git/checkout 切换分支", async () => {
   await state.session.post("/git/checkout", { root: state.repo, branch: "main" });
 });
 
+check("GET /git/stats 返回按文件的行数统计", async () => {
+  // Set up a known working tree so this check does not depend on earlier ones.
+  await fs.writeFile(path.join(state.repo, "a.ts"), "export const a = 9;\nexport const b = 9;\n", "utf8");
+  await fs.writeFile(path.join(state.repo, "stats-new.txt"), "hello\nstats\n", "utf8");
+  const { status, body } = await state.session.json("/git/stats?root=" + encodeURIComponent(state.repo));
+  assert(status === 200 && body.ok === true, "stats 失败：" + status);
+  assert(typeof body.staged === "object" && typeof body.unstaged === "object", "stats 缺少 staged/unstaged");
+  const entry = body.unstaged["a.ts"];
+  assert(entry !== undefined, "stats 缺少 a.ts 的统计：" + JSON.stringify(Object.keys(body.unstaged)));
+  assert(entry.binary === false, "a.ts 不应是二进制");
+  assert(entry.additions >= 1, "a.ts additions 应 >= 1，实际 " + entry.additions);
+  assert(entry.deletions >= 1, "a.ts deletions 应 >= 1，实际 " + entry.deletions);
+});
+
+check("POST /git/apply-hunk 只暂存一个 hunk", async () => {
+  const wt = await state.session.json(
+    "/git/diff?root=" + encodeURIComponent(state.repo) + "&path=" + encodeURIComponent("a.ts") + "&mode=worktree",
+  );
+  assert(wt.status === 200 && wt.body.hunks.length >= 1, "a.ts 没有可暂存的 hunk");
+  const hunk = wt.body.hunks[0];
+  const patch = [
+    "diff --git a/a.ts b/a.ts",
+    "--- a/a.ts",
+    "+++ b/a.ts",
+    hunk.header,
+    ...hunk.lines.map((line) => (line.type === "add" ? "+" : line.type === "del" ? "-" : " ") + line.text),
+    "",
+  ].join("\n");
+  const applied = await state.session.post("/git/apply-hunk", {
+    root: state.repo,
+    path: "a.ts",
+    direction: "stage",
+    patch,
+  });
+  assert(applied.status === 200 && applied.body.ok === true, "apply-hunk 失败：" + applied.text.slice(0, 300));
+  const after = await state.session.json("/git/status?root=" + encodeURIComponent(state.repo));
+  assert(after.body.staged.some((item) => item.path === "a.ts"), "hunk 暂存后 a.ts 未进入暂存区");
+  const unstaged = await state.session.post("/git/unstage", { root: state.repo, paths: ["a.ts"] });
+  assert(unstaged.status === 200, "清理暂存失败");
+});
+
+check("POST /git/amend 替换上一个提交", async () => {
+  const before = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&limit=5");
+  const countBefore = before.body.commits.length;
+  const amended = await state.session.post("/git/amend", { root: state.repo, message: "chore: amend 自检" });
+  assert(amended.status === 200 && amended.body.ok === true, "amend 失败：" + amended.text.slice(0, 300));
+  assert(typeof amended.body.sha === "string" && amended.body.sha.length === 40, "amend 未返回完整 sha");
+  const after = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&limit=5");
+  assert(after.body.commits[0].subject === "chore: amend 自检", " amend 后提交信息未更新");
+  assert(after.body.commits[0].sha !== before.body.commits[0].sha, "amend 后 sha 未变化");
+  assert(after.body.commits.length === countBefore, "amend 不应新增提交");
+  const empty = await state.session.post("/git/amend", { root: state.repo, message: "  " });
+  assert(empty.status === 400, "空 amend 信息应 400，实际 " + empty.status);
+});
+
+check("POST /git/branches 创建/重命名/删除与拒绝删除当前分支", async () => {
+  const created = await state.session.post("/git/branches", { root: state.repo, action: "create", name: "verify/branch" });
+  assert(created.status === 200 && created.body.ok === true, "创建分支失败：" + created.text.slice(0, 300));
+  const status = await state.session.json("/git/status?root=" + encodeURIComponent(state.repo));
+  assert(status.body.branch.name === "verify/branch", "创建后 HEAD 不在新分支上");
+  const refuse = await state.session.post("/git/branches", { root: state.repo, action: "delete", name: "verify/branch" });
+  assert(refuse.status === 409, "删除当前分支应 409，实际 " + refuse.status);
+  await state.session.post("/git/checkout", { root: state.repo, branch: "main" });
+  const renamed = await state.session.post("/git/branches", { root: state.repo, action: "rename", name: "verify/branch", newName: "verify/renamed" });
+  assert(renamed.status === 200 && renamed.body.ok === true, "重命名失败：" + renamed.text.slice(0, 300));
+  const deleted = await state.session.post("/git/branches", { root: state.repo, action: "delete", name: "verify/renamed", force: true });
+  assert(deleted.status === 200 && deleted.body.ok === true, "删除分支失败：" + deleted.text.slice(0, 300));
+});
+
+check("GET/POST /git/stash 往返", async () => {
+  await state.session.post("/git/stage", { root: state.repo, paths: ["keep.txt"] });
+  const created = await state.session.post("/git/stash", { root: state.repo, action: "create", message: "verify stash" });
+  assert(created.status === 200 && created.body.ok === true, "stash 创建失败：" + created.text.slice(0, 300));
+  const listed = await state.session.json("/git/stash?root=" + encodeURIComponent(state.repo));
+  assert(listed.status === 200 && Array.isArray(listed.body.entries) && listed.body.entries.length === 1, "stash 列表数量错误");
+  assert(listed.body.entries[0].ref.startsWith("stash@{"), "stash ref 形状错误");
+
+  // pop removes the entry and restores the worktree.
+  const popped = await state.session.post("/git/stash", { root: state.repo, action: "pop", index: 0 });
+  assert(popped.status === 200, "stash pop 失败：" + popped.text.slice(0, 300));
+  const afterPop = await state.session.json("/git/stash?root=" + encodeURIComponent(state.repo));
+  assert(afterPop.body.entries.length === 0, "pop 后 stash 仍有条目");
+
+  // apply keeps the entry around; drop then removes it explicitly.
+  const createdAgain = await state.session.post("/git/stash", { root: state.repo, action: "create", message: "verify stash 2" });
+  assert(createdAgain.status === 200, "第二次 stash 创建失败");
+  const applied = await state.session.post("/git/stash", { root: state.repo, action: "apply", index: 0 });
+  assert(applied.status === 200 && applied.body.ok === true, "stash apply 失败：" + applied.text.slice(0, 300));
+  const stillThere = await state.session.json("/git/stash?root=" + encodeURIComponent(state.repo));
+  assert(stillThere.body.entries.length === 1, "apply 之后 stash 条目应保留");
+  const dropped = await state.session.post("/git/stash", { root: state.repo, action: "drop", index: 0, confirm: true });
+  assert(dropped.status === 200 && dropped.body.ok === true, "stash drop 失败：" + dropped.text.slice(0, 300));
+  const afterDrop = await state.session.json("/git/stash?root=" + encodeURIComponent(state.repo));
+  assert(afterDrop.body.entries.length === 0, "drop 后 stash 仍有条目");
+  const noConfirm = await state.session.post("/git/stash", { root: state.repo, action: "drop", index: 0 });
+  assert(noConfirm.status === 400 || noConfirm.status === 404, "缺少 confirm 的 drop 应被拒绝，实际 " + noConfirm.status);
+});
+
+check("GET /git/log 支持 grep / author / path 过滤", async () => {
+  const byGrep = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&grep=amend&limit=20");
+  assert(byGrep.status === 200 && byGrep.body.commits.length >= 1, "grep 过滤无结果");
+  assert(byGrep.body.commits.every((commit) => commit.subject.includes("amend")), "grep 过滤返回了不匹配的提交");
+  const byAuthor = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&author=Verify&limit=20");
+  assert(byAuthor.status === 200, "author 过滤失败");
+  const unmatched = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&grep=绝对不会出现的提交信息zzz&limit=20");
+  assert(unmatched.status === 200 && unmatched.body.commits.length === 0 && unmatched.body.hasMore === false, "无匹配应返回空列表");
+  const byPath = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&path=" + encodeURIComponent("lib/git.js") + "&limit=20");
+  assert(byPath.status === 200, "path 过滤失败");
+  const escape = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&path=" + encodeURIComponent("../outside.txt"));
+  assert(escape.status === 400, "越界 path 过滤应 400，实际 " + escape.status);
+});
+
 check("未知 /git 路由返回 404 JSON", async () => {
   const { status, body } = await state.session.json("/git/does-not-exist");
   assert(status === 404, "应为 404，实际 " + status);
