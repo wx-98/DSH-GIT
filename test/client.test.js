@@ -439,26 +439,97 @@ test("apply registers exactly one right-sidebar tab type for dsh-git", () => {
   assert.ok(spec.guide[0].description().length > 0);
 });
 
-test("apply registers the panel body and the title chip keyed by dsh-git", () => {
-  assert.equal(STATE.slotRegistrations.length, 2);
-  const body = STATE.slotRegistrations[0];
-  const title = STATE.slotRegistrations[1];
-  assert.equal(body.spec.name, "sidebar.right.pane.tab");
-  assert.equal(title.spec.name, "sidebar.right.pane.tab.title");
-  for (const registration of STATE.slotRegistrations) {
+test("apply registers the panel body, the title chip and the header branch chip", () => {
+  assert.equal(STATE.slotRegistrations.length, 3);
+  const body = STATE.slotRegistrations.find((entry) => entry.spec.name === "sidebar.right.pane.tab");
+  const title = STATE.slotRegistrations.find((entry) => entry.spec.name === "sidebar.right.pane.tab.title");
+  const chip = STATE.slotRegistrations.find((entry) => entry.spec.name === "conversation.session.header.actions");
+  assert.ok(body, "the panel body slot must be registered");
+  assert.ok(title, "the title chip slot must be registered");
+  assert.ok(chip, "the session-header branch chip slot must be registered");
+  for (const registration of [body, title]) {
     assert.equal(registration.spec.key, "dsh-git");
     assert.equal(registration.spec.locale, "git");
     assert.equal(typeof registration.component, "function");
   }
   assert.equal(body.component, INTERNALS.GitBody);
   assert.equal(title.component, INTERNALS.GitTitle);
+  assert.equal(chip.component, INTERNALS.GitBranchChip);
+  assert.equal(chip.spec.id, "git-branch");
+  assert.equal(chip.spec.locale, "git");
+  assert.equal(typeof chip.spec.order, "number");
   assert.deepEqual(Array.from(STATE.effectLabels), [
     "dsh-git: styles",
     "dsh-git: dictionaries",
+    "dsh-git: header branch chip",
     "dsh-git: tab type",
     "dsh-git: body",
     "dsh-git: title",
   ]);
+});
+
+test("the commit graph lays out a linear history in one stable lane", () => {
+  const graph = INTERNALS.computeLanes([
+    { sha: "c3", parents: ["c2"] },
+    { sha: "c2", parents: ["c1"] },
+    { sha: "c1", parents: [] },
+  ]);
+  assert.equal(graph.rows.length, 3);
+  assert.equal(graph.maxLanes, 1);
+  for (const row of graph.rows) {
+    assert.equal(row.lane, 0);
+    assert.equal(row.width, 1);
+    assert.ok(Array.from(row.passThrough).length === 0, "a linear history has no pass-through lanes");
+    assert.ok(Array.from(row.merges).length === 0, "a linear history has no merging lanes");
+  }
+});
+
+test("the commit graph keeps columns stable across a fork and a merge", () => {
+  // m2 merges b1 into the main line; m1 is the fork point.
+  const graph = INTERNALS.computeLanes([
+    { sha: "m2", parents: ["m1", "b1"] },
+    { sha: "b1", parents: ["m1"] },
+    { sha: "m1", parents: [] },
+  ]);
+  assert.equal(graph.rows.length, 3);
+  // The merge commit sits on lane 0 and spawns a second lane for its second parent.
+  assert.equal(graph.rows[0].lane, 0);
+  assert.ok(graph.rows[0].exits.length === 2, "a merge commit has two exits");
+  assert.ok(graph.rows[0].width >= 2, "the merge row needs the second lane");
+  // The branch commit lives on the second lane and passes the first one through.
+  assert.equal(graph.rows[1].lane, 1);
+  assert.deepEqual(Array.from(graph.rows[1].passThrough), [0]);
+  // The fork point merges the branch lane back into lane 0.
+  assert.equal(graph.rows[2].lane, 0);
+  // Columns are stable: every exit of a row must be picked up by the next row's
+  // entries at the very same column, otherwise lines would jump sideways.
+  for (let index = 0; index < graph.rows.length - 1; index += 1) {
+    const nextColumns = new Set(Array.from(graph.rows[index + 1].entries, (entry) => entry.col));
+    for (const exit of graph.rows[index].exits) {
+      assert.ok(nextColumns.has(exit.col), "row " + index + " exit at column " + exit.col + " is not continued");
+    }
+  }
+});
+
+test("the commit graph tolerates missing parents and empty input", () => {
+  assert.equal(INTERNALS.computeLanes([]).rows.length, 0);
+  const graph = INTERNALS.computeLanes([{ sha: "only" }, { parents: ["x"] }]);
+  assert.equal(graph.rows.length, 2);
+  assert.equal(graph.rows[0].lane, 0);
+  assert.equal(typeof graph.rows[0].width, "number");
+  assert.equal(typeof graph.rows[0].color, "number");
+  for (const row of graph.rows) {
+    assert.ok(Array.isArray(row.laneColors));
+    assert.equal(row.laneColors.length, row.width);
+  }
+});
+
+test("ref pills map HEAD, remote-tracking and local branches to distinct tones", () => {
+  assert.equal(INTERNALS.refTone("HEAD -> main"), "head");
+  assert.equal(INTERNALS.refTone("origin/main"), "remote");
+  assert.equal(INTERNALS.refTone("feature/x"), "remote");
+  assert.equal(INTERNALS.refTone("main"), "local");
+  assert.equal(INTERNALS.refTone(""), "local");
 });
 
 test("panel components keep the injected props contract", () => {

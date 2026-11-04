@@ -106,3 +106,46 @@ PASS  POST /git/checkout 切换分支           PASS  未知 /git 路由返回 4
 - 浏览器验证用的是独立 `web` profile 实例（同一份代码、同一个 0.2.1-rc.5 运行时），不是用户桌面窗口本身；
   桌面端的最终视觉确认仍需用户刷新页面。
 - 未覆盖：多仓库/子模块视图、pull/push/fetch、stash、hunk 级暂存、三方冲突解决。
+
+## 7. 0.2.0 增补：配色 / 提交图 / 头部分支芯片（2026-11-04 第二轮）
+
+### 7.1 变更内容
+
+| 需求 | 实现 |
+|---|---|
+| 「git 没有颜色」 | 状态字母按语义着色（M 琥珀、A/未跟踪 绿、D 红、R/C 蓝、冲突 橙），文件名跟随状态着色，深浅主题各一套；`HEAD -> main` 绿、远端引用蓝、短 sha 蓝 |
+| 「没有 VSCode 那种 GRAPH」 | 历史列表左侧彩色泳道（圆点 + 竖线 + 合并/分叉曲线）；算法在 `tools/graph-lanes.mjs`（纯函数、16 项测试），`client.js` 内联同一份实现并用 SVG 绘制 |
+| 「页面顶端显示当前分支」 | 注册 `conversation.session.header.actions`，在会话标题栏常驻 `● main 3` 芯片：分支名 + ahead/behind + 变更数；点击弹出分组变更摘要 |
+
+### 7.2 测试
+
+```
+$ node --test test/host.test.js test/client.test.js test/graph-lanes.test.js
+ℹ tests 72
+ℹ pass 72
+ℹ fail 0
+```
+
+- `test/graph-lanes.test.js`（16 项）：线性 / 并行分支 fork+merge / 双父 merge / 三父八爪鱼 / 根提交 /
+  parents 缺失与未知父 / 空列表 / `maxLanes` 截断 / 颜色稳定 / 列复用 / 畸形输入 / ASCII 快照，
+  另有两条不变量守卫：字段完备性、**第 N 行 `exits[].col` 必须出现在第 N+1 行 `entries` 的同一列**（列号跨行不错位）。
+- `test/client.test.js`（32 项，新增 4 项）：提交图线性/分叉合并/容错、ref 色调映射，以及 `apply` 现在注册 3 个槽位
+  （body、title、header chip）。
+
+### 7.3 真实浏览器验证（headless Chrome + CDP）
+
+| 检查 | 结果 |
+|---|---|
+| 会话标题栏出现芯片，内容为 `main 3`（分支 main + 3 项变更） | ✅ [截图](ui-header-chip.png) |
+| 点击芯片弹出摘要：分支、`无上游`、`变更 2`（M client.js / M test/client.test.js）、`未跟踪 1` | ✅ [截图](ui-chip-popover.png) |
+| 变更面板状态字母与文件名着色（M 琥珀、U 绿） | ✅ [截图](ui-git-changes.png) |
+| 历史列表彩色泳道（线性仓库：单列圆点） | ✅ [截图](ui-git-history.png) |
+| 历史列表在**真实分叉仓库**上的泳道：两条彩色泳道 + 合并/分叉曲线 + 彩色 ref 标签 | ✅ [截图](ui-git-graph.png) |
+
+提交图验证用的仓库是临时构造的（`main` 主线 + `feature/scm`、`feature/graph` 两个分支各两次提交，两次 `--no-ff` 合并），
+以临时 workspace 挂到独立 web 实例上截图，验证后已从 workspace 注册表还原并删除。
+
+### 7.4 已知限制
+
+- 提交图按页（每页 50 条）计算泳道，跨页的分支线在翻页处重新起线（列号仍稳定，不会错位）。
+- 头部芯片 10s 轮询一次（面板可见时 4s），不推送事件。

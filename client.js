@@ -37,6 +37,8 @@ window.__ModuleLoader__.load({
     const ROUTE_PREFIX = "/git";
     /** Working-tree polling cadence while the changes tab is visible. */
     const POLL_MS = 4000;
+    /** Header chip polling cadence; slower than the panel because it is always mounted. */
+    const CHIP_POLL_MS = 10000;
     /** Commits fetched per log page (the Host caps limit at 200). */
     const LOG_LIMIT = 50;
     /** Distance from the bottom that triggers the next log page. */
@@ -192,6 +194,17 @@ window.__ModuleLoader__.load({
         return { kind: "meta", sign: "", rowClass: "dg-diff-row dg-diff-row-meta" };
       }
       return { kind: "context", sign: " ", rowClass: "dg-diff-row dg-diff-row-context" };
+    }
+
+    /**
+     * Tone of one ref decoration: the checked-out line, a remote-tracking ref,
+     * or a plain local branch. Drives the coloured ref pills in the history list.
+     */
+    function refTone(tag) {
+      const value = typeof tag === "string" ? tag.trim() : "";
+      if (value.startsWith("HEAD")) return "head";
+      if (value.indexOf("/") !== -1) return "remote";
+      return "local";
     }
 
     /** Locale key for one diff mode. */
@@ -838,7 +851,7 @@ window.__ModuleLoader__.load({
         }
         return h("div", {
           key: group.section + ":" + path,
-          className: "dg-file-row" + (selected ? " dg-file-row-selected" : ""),
+          className: "dg-file-row dg-file-row-tone-" + meta.tone + (selected ? " dg-file-row-selected" : ""),
           role: "button",
           tabIndex: 0,
           "aria-pressed": selected ? "true" : "false",
@@ -1046,7 +1059,7 @@ window.__ModuleLoader__.load({
       rows.push(detailRow(t("history.detail.time"), timeText, "time"));
       if (refs.length > 0) {
         rows.push(detailRow(t("history.detail.refs"), h("span", null, refs.map(function (tag, index) {
-          return h("span", { className: "dg-ref-tag", key: "ref-" + String(index) }, String(tag));
+          return h("span", { className: "dg-ref-tag dg-ref-" + refTone(tag), key: "ref-" + String(index) }, String(tag));
         })), "refs"));
       }
       if (parents.length > 0) {
@@ -1119,6 +1132,10 @@ window.__ModuleLoader__.load({
       const setRefName = refNameRef[1];
       const commitsRef = React.useState([]);
       const commits = commitsRef[0];
+      // Lane layout for the current page; recomputed only when the page changes.
+      const graph = React.useMemo(function () {
+        return computeLanes(commits, { maxLanes: GRAPH_MAX_LANES });
+      }, [commits]);
       const setCommits = commitsRef[1];
       const hasMoreRef = React.useState(false);
       const hasMore = hasMoreRef[0];
@@ -1297,15 +1314,17 @@ window.__ModuleLoader__.load({
             setDetail({ sha: sha });
           },
         },
-          h("div", { className: "dg-commit-line" },
-            h("span", { className: "dg-sha" }, shortSha),
-            h("span", { className: "dg-commit-subject" }, subject)),
-          h("div", { className: "dg-commit-meta" },
-            refs.map(function (tag, refIndex) {
-              return h("span", { className: "dg-ref-tag", key: "ref-" + String(refIndex) }, String(tag));
-            }),
-            author === "" ? null : h("span", { className: "dg-commit-author" }, author),
-            time === null ? null : h("span", { className: "dg-commit-time" }, formatRelativeTime(time, Date.now(), t))));
+          h(CommitGraph, { row: graph.rows[index], rowKey: sha === "" ? index : sha }),
+          h("div", { className: "dg-commit-body" },
+            h("div", { className: "dg-commit-line" },
+              h("span", { className: "dg-sha" }, shortSha),
+              h("span", { className: "dg-commit-subject" }, subject)),
+            h("div", { className: "dg-commit-meta" },
+              refs.map(function (tag, refIndex) {
+                return h("span", { className: "dg-ref-tag dg-ref-" + refTone(tag), key: "ref-" + String(refIndex) }, String(tag));
+              }),
+              author === "" ? null : h("span", { className: "dg-commit-author" }, author),
+              time === null ? null : h("span", { className: "dg-commit-time" }, formatRelativeTime(time, Date.now(), t)))));
       });
 
       let listContent;
@@ -1327,6 +1346,514 @@ window.__ModuleLoader__.load({
           loading !== true && loadingMore !== true && commits.length > 0 && hasMore !== true
             ? h("div", { className: "dg-load-more" }, t("history.noMore"))
             : null));
+    }
+
+    // -------------------------------------------------------------------------
+    // Commit graph (VSCode / gitk style lanes)
+    // -------------------------------------------------------------------------
+
+    /** Lane palette: eight hues that stay distinguishable on light and dark panels. */
+    const LANE_COLORS = ["#4f9cf9", "#e3b341", "#3fb950", "#a371f7", "#f85149", "#39c5cf", "#db61a2", "#8b949e"];
+
+    /** Graph geometry, in CSS pixels; the commit row is exactly this tall. */
+    const GRAPH_LANE_WIDTH = 14;
+    const GRAPH_ROW_HEIGHT = 44;
+    const GRAPH_MAX_LANES = 10;
+
+    /** Default lane cap for one page of commits. */
+    const DEFAULT_MAX_LANES = 12;
+    /** Palette size; matches LANE_COLORS.length. */
+    const PALETTE_SIZE = 8;
+    /** Sanitised empty parents list (a fresh frozen array per call would churn). */
+    const NO_PARENTS = [];
+
+/* ------------------------------------------------------------------------ */
+/* helpers                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * @param {unknown} value
+ * @returns {number} a positive integer, `DEFAULT_MAX_LANES` when unusable
+ */
+function normalizeMaxLanes(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MAX_LANES;
+  const limit = Math.trunc(value);
+  return limit < 1 ? 1 : limit;
+}
+
+/**
+ * Sanitise a `parents` field: strings only, trimmed, non-empty, de-duplicated.
+ *
+ * @param {unknown} parents
+ * @returns {string[]}
+ */
+function normalizeParents(parents) {
+  if (!Array.isArray(parents)) return NO_PARENTS;
+  const out = [];
+  for (const value of parents) {
+    if (typeof value !== "string") continue;
+    const sha = value.trim();
+    if (sha.length === 0 || out.indexOf(sha) >= 0) continue;
+    out.push(sha);
+  }
+  return out;
+}
+
+/**
+ * Pick the palette index used by the fewest live columns, lowest index on a
+ * tie. Unused colours therefore come out in order 0, 1, 2, … and once every
+ * colour is taken they keep cycling — two neighbouring lanes only share a
+ * colour when the page really has more lanes than palette entries.
+ *
+ * @param {(string|null)[]} lanes
+ * @param {(number|null)[]} colors
+ * @returns {number}
+ */
+function allocColor(lanes, colors) {
+  const counts = new Array(PALETTE_SIZE).fill(0);
+  for (let i = 0; i < lanes.length; i += 1) {
+    if (lanes[i] == null) continue;
+    const color = colors[i];
+    if (typeof color === "number" && color >= 0 && color < PALETTE_SIZE) counts[color] += 1;
+  }
+  let best = 0;
+  for (let c = 1; c < PALETTE_SIZE; c += 1) {
+    if (counts[c] < counts[best]) best = c;
+  }
+  return best;
+}
+
+/* ------------------------------------------------------------------------ */
+/* computeLanes                                                             */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Lay out the commit graph lanes for a page of commits (newest → oldest).
+ *
+ * @param {Array<{ sha?: string, parents?: string[] }>} commits
+ * @param {{ maxLanes?: number }} [options]
+ * @returns {{
+ *   maxLanes: number,
+ *   rows: Array<{
+ *     lane: number,
+ *     width: number,
+ *     passThrough: number[],
+ *     entries: Array<{ col: number, fromLane: number }>,
+ *     exits: Array<{ col: number, toCommit: string }>,
+ *     merges: Array<{ from: number, to: number }>,
+ *     color: number,
+ *     laneColors: number[]
+ *   }>
+ * }}
+ */
+function computeLanes(commits, options = {}) {
+  const limit = normalizeMaxLanes(options && typeof options === "object" ? options.maxLanes : undefined);
+  const list = Array.isArray(commits) ? commits : [];
+
+  /** `lanes[i]` = sha the column `i` expects next, or `null` when the slot is free. */
+  const lanes = [];
+  /** Colour index of the line currently living in column `i` (`null` when free). */
+  const colors = [];
+
+  const rows = [];
+  let maxWidth = 0;
+
+  for (const item of list) {
+    const commit = item && typeof item === "object" ? item : {};
+    const sha = typeof commit.sha === "string" ? commit.sha : "";
+    const parents = normalizeParents(commit.parents);
+
+    /* ---- 1. locate the column that this commit's dot lives in ----------- */
+    let lane = lanes.indexOf(sha);
+    let isNewColumn = false;
+    if (lane < 0) {
+      // Unknown commit (a branch tip, or the first commit of the page): take
+      // the first column nobody waits for, else open a brand new column.
+      lane = lanes.indexOf(null);
+      if (lane < 0) {
+        lane = lanes.length;
+        lanes.push(null);
+        colors.push(null);
+      }
+      lanes[lane] = sha;
+      colors[lane] = allocColor(lanes, colors);
+      isNewColumn = true;
+    }
+    const dotColor = typeof colors[lane] === "number" ? colors[lane] : 0;
+
+    /* ---- 2. lines that come into the row from above --------------------- */
+    const entries = [];
+    for (let i = 0; i < lanes.length; i += 1) {
+      if (lanes[i] == null) continue;
+      if (i === lane && isNewColumn) continue; // a fresh column has no line above
+      entries.push({ col: i, fromLane: i });
+    }
+
+    /* ---- 3. defensive: extra columns that also expect this commit ------- */
+    // With the "reuse the existing column" rule below this never happens, but
+    // if a caller hands us a list where a commit is expected twice, the extra
+    // lines bend into the dot instead of being painted twice.
+    const merges = [];
+    for (let i = 0; i < lanes.length; i += 1) {
+      if (i === lane || lanes[i] == null) continue;
+      if (lanes[i] !== sha) continue;
+      merges.push({ from: i, to: lane });
+      lanes[i] = null;
+      colors[i] = null;
+    }
+
+    /* ---- 4. hand the dot's column and the parents their continuations --- */
+    lanes[lane] = null;
+    const freedColor = colors[lane];
+    colors[lane] = null;
+
+    const targets = new Array(parents.length);
+    for (let i = 0; i < parents.length; i += 1) {
+      const parentSha = parents[i];
+      let target = lanes.indexOf(parentSha);
+      if (target < 0) {
+        if (i === 0) {
+          // The first parent keeps the dot's own column: the branch line runs
+          // straight down and keeps its colour.
+          target = lane;
+        } else {
+          // Further parents (merge / octopus) reuse a free column, which
+          // includes the column the dot just vacated, else open a new one.
+          target = lanes.indexOf(null);
+          if (target < 0) {
+            target = lanes.length;
+            lanes.push(null);
+            colors.push(null);
+          }
+        }
+      }
+      lanes[target] = parentSha;
+      if (target === lane) {
+        colors[target] = freedColor;
+      } else if (colors[target] == null) {
+        colors[target] = allocColor(lanes, colors);
+      }
+      targets[i] = target;
+    }
+
+    /* ---- 5. build the row ------------------------------------------------ */
+    const passThrough = [];
+    for (let i = 0; i < lanes.length; i += 1) {
+      if (i === lane) continue;
+      if (lanes[i] == null) continue;
+      passThrough.push(i);
+    }
+
+    const exits = [];
+    for (let i = 0; i < parents.length; i += 1) {
+      exits.push({ col: targets[i], toCommit: parents[i] });
+    }
+
+    let width = lane + 1;
+    for (const col of passThrough) if (col + 1 > width) width = col + 1;
+    for (const entry of exits) if (entry.col + 1 > width) width = entry.col + 1;
+    for (const merge of merges) {
+      if (merge.from + 1 > width) width = merge.from + 1;
+      if (merge.to + 1 > width) width = merge.to + 1;
+    }
+    if (width < 1) width = 1;
+    if (width > limit) width = limit;
+
+    const dotLane = lane < width ? lane : width - 1;
+
+    const row = {
+      lane: dotLane,
+      width,
+      passThrough: passThrough.filter((col) => col < width),
+      entries: entries
+        .filter((entry) => entry.col < width)
+        .map((entry) => ({ col: entry.col, fromLane: entry.fromLane })),
+      exits: exits.filter((exit) => exit.col < width),
+      merges: merges.filter((merge) => merge.from < width && merge.to < width),
+      color: dotColor,
+      laneColors: [],
+    };
+    for (let i = 0; i < width; i += 1) {
+      // Free columns carry no line; `0` is just a type-correct placeholder.
+      row.laneColors.push(typeof colors[i] === "number" ? colors[i] : 0);
+    }
+    // Keep the dot and the line of its own column in sync even when the column
+    // was released this row (root commit / parent tracked elsewhere).
+    if (typeof colors[dotLane] !== "number") row.laneColors[dotLane] = dotColor;
+
+    rows.push(row);
+    if (width > maxWidth) maxWidth = width;
+
+    /* ---- 6. drop trailing free columns (indices stay stable) ------------- */
+    while (lanes.length > 0 && lanes[lanes.length - 1] == null) {
+      lanes.pop();
+      colors.pop();
+    }
+  }
+
+  return { rows, maxLanes: maxWidth };
+}
+
+
+    /**
+     * One commit row's lane column.
+     *
+     * Drawing recipe (rows are one row tall, the dot sits at the vertical middle):
+     *   - every column in `passThrough` draws a straight line top→bottom, except a
+     *     column that is also an exit (that line only exists below the dot);
+     *   - the dot column draws its upper half only when `entries` carries it, and
+     *     its lower half only when `exits` carries it (a root commit has none);
+     *   - every exit leaves the dot as a curve and lands on its column at the bottom,
+     *     where the next row's `entries` picks the line up again.
+     */
+    function CommitGraph(props) {
+      const row = props.row;
+      const height = GRAPH_ROW_HEIGHT;
+      const laneWidth = GRAPH_LANE_WIDTH;
+      const middle = height / 2;
+      if (row === null || row === undefined) {
+        return h("span", { className: "dg-graph", style: { width: laneWidth + "px", height: height + "px" } });
+      }
+      const width = Math.max(1, row.width) * laneWidth;
+      const palette = Array.isArray(row.laneColors) ? row.laneColors : [];
+      const colourOf = function (column) {
+        const index = typeof palette[column] === "number" ? palette[column] : 0;
+        return LANE_COLORS[((index % LANE_COLORS.length) + LANE_COLORS.length) % LANE_COLORS.length];
+      };
+      const centre = function (column) { return column * laneWidth + laneWidth / 2; };
+      const lane = Math.max(0, row.lane | 0);
+      const exits = Array.isArray(row.exits) ? row.exits : [];
+      const entries = Array.isArray(row.entries) ? row.entries : [];
+      const passThrough = Array.isArray(row.passThrough) ? row.passThrough : [];
+      const keyPrefix = props.rowKey === undefined ? "" : String(props.rowKey) + ":";
+      const exitColumns = new Set(exits.map(function (exit) { return exit.col; }));
+      const shapes = [];
+
+      // Straight lines: a pass-through column that also exits only exists below the dot.
+      for (const column of passThrough) {
+        const continues = exitColumns.has(column);
+        shapes.push(h("line", {
+          key: keyPrefix + "pass-" + String(column),
+          x1: centre(column), x2: centre(column),
+          y1: continues ? middle : 0, y2: height,
+          stroke: colourOf(column), strokeWidth: 1.6, strokeLinecap: "round",
+        }));
+      }
+      // The dot column: upper half from the incoming line, lower half into its first parent.
+      const entersDot = entries.some(function (entry) { return entry.col === lane; });
+      if (entersDot) {
+        shapes.push(h("line", {
+          key: keyPrefix + "in",
+          x1: centre(lane), x2: centre(lane), y1: 0, y2: middle,
+          stroke: colourOf(lane), strokeWidth: 1.6, strokeLinecap: "round",
+        }));
+      }
+      if (exitColumns.has(lane)) {
+        shapes.push(h("line", {
+          key: keyPrefix + "out",
+          x1: centre(lane), x2: centre(lane), y1: middle, y2: height,
+          stroke: colourOf(lane), strokeWidth: 1.6, strokeLinecap: "round",
+        }));
+      }
+      // Merge / fork curves: leave the dot and reach the other column at the row bottom.
+      for (const exit of exits) {
+        if (exit.col === lane) continue;
+        const to = centre(exit.col);
+        shapes.push(h("path", {
+          key: keyPrefix + "exit-" + String(exit.col),
+          d: "M " + centre(lane) + " " + middle + " C " + centre(lane) + " " + (middle + height / 4) + " " + to + " " + (middle + height / 4) + " " + to + " " + height,
+          fill: "none", stroke: colourOf(exit.col), strokeWidth: 1.6, strokeLinecap: "round",
+        }));
+      }
+      // Defensive folds (the stable-column model never produces them, but paint them
+      // rather than drop a line if a caller ever hands one in).
+      for (const merge of Array.isArray(row.merges) ? row.merges : []) {
+        const from = centre(merge.from);
+        shapes.push(h("path", {
+          key: keyPrefix + "merge-" + String(merge.from),
+          d: "M " + from + " 0 L " + from + " " + middle + " L " + centre(lane) + " " + middle,
+          fill: "none", stroke: colourOf(merge.from), strokeWidth: 1.6, strokeLinecap: "round",
+        }));
+      }
+      // The commit dot paints last so it covers the joins underneath it.
+      shapes.push(h("circle", {
+        key: keyPrefix + "dot",
+        cx: centre(lane), cy: middle, r: 3.6,
+        fill: colourOf(lane), stroke: "var(--dsw-specific-menu,#fff)", strokeWidth: 1.5,
+      }));
+
+      return h("span", {
+        className: "dg-graph",
+        style: { width: width + "px", height: height + "px" },
+        "aria-hidden": "true",
+      }, h("svg", {
+        width: width, height: height, viewBox: "0 0 " + width + " " + height,
+        className: "dg-graph-svg",
+      }, shapes));
+    }
+
+    // -------------------------------------------------------------------------
+    // Session-header branch chip (conversation.session.header.actions)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Compact branch indicator for the conversation header: the branch name, the
+     * ahead/behind counters and the number of working-tree changes, all in the
+     * VSCode status-bar idiom. Clicking it opens a small read-only summary of the
+     * working tree; the full panel stays in the right sidebar.
+     *
+     * Renders nothing at all outside a repository, so a conversation in a plain
+     * directory never grows a control it cannot explain.
+     */
+    function GitBranchChip(rawProps) {
+      const props = rawProps || {};
+      const sessionId = props.sessionId;
+      const useSessions = typeof props.useSessions === "function" ? props.useSessions : NO_SESSIONS;
+      const t = typeof props.t === "function" ? props.t : defaultTranslate;
+      const cwd = useSessionCwd(useSessions, sessionId);
+      const root = isNonEmptyString(cwd) ? cwd : null;
+
+      const statusState = React.useState(null);
+      const status = statusState[0];
+      const setStatus = statusState[1];
+      const openState = React.useState(false);
+      const open = openState[0];
+      const setOpen = openState[1];
+      const rootRef = React.useRef(null);
+      const mountedRef = React.useRef(false);
+      const seqRef = React.useRef(0);
+
+      React.useEffect(function () {
+        mountedRef.current = true;
+        return function () {
+          mountedRef.current = false;
+        };
+      }, []);
+
+      const load = React.useCallback(function () {
+        if (root === null) {
+          setStatus(null);
+          return;
+        }
+        const seq = seqRef.current + 1;
+        seqRef.current = seq;
+        api.status(root).then(function (payload) {
+          if (!mountedRef.current || seqRef.current !== seq) return;
+          setStatus(payload);
+        }, function () {
+          if (!mountedRef.current || seqRef.current !== seq) return;
+          setStatus(null);
+        });
+      }, [root]);
+
+      React.useEffect(function () {
+        load();
+      }, [load]);
+
+      React.useEffect(function () {
+        if (root === null) return undefined;
+        const timer = setInterval(function () {
+          if (typeof document !== "undefined" && document.hidden === true) return;
+          load();
+        }, CHIP_POLL_MS);
+        return function () {
+          clearInterval(timer);
+        };
+      }, [root, load]);
+
+      React.useEffect(function () {
+        if (!open) return undefined;
+        if (typeof document === "undefined") return undefined;
+        const onPointer = function (event) {
+          const node = rootRef.current;
+          if (node !== null && typeof node.contains === "function" && node.contains(event.target)) return;
+          setOpen(false);
+        };
+        const onKey = function (event) {
+          if (event.key === "Escape") setOpen(false);
+        };
+        document.addEventListener("pointerdown", onPointer, true);
+        document.addEventListener("keydown", onKey);
+        return function () {
+          document.removeEventListener("pointerdown", onPointer, true);
+          document.removeEventListener("keydown", onKey);
+        };
+      }, [open]);
+
+      const repo = status !== null && typeof status === "object" && status.isRepo === true;
+      if (root === null || !repo) return null;
+
+      const branch = status.branch !== null && typeof status.branch === "object" ? status.branch : null;
+      const counts = status.counts !== null && typeof status.counts === "object" ? status.counts : null;
+      const branchName = branch !== null && isNonEmptyString(branch.name) ? branch.name : "";
+      const detached = branch !== null && branch.detached === true;
+      const ahead = branch === null ? 0 : toCount(branch.ahead);
+      const behind = branch === null ? 0 : toCount(branch.behind);
+      const upstream = branch !== null && isNonEmptyString(branch.upstream) ? branch.upstream : "";
+      const changeCount = counts === null
+        ? 0
+        : toCount(counts.staged) + toCount(counts.unstaged) + toCount(counts.untracked) + toCount(counts.conflicted);
+      const label = detached ? t("chip.detached") : branchName;
+
+      const groups = [];
+      const pushGroup = function (key, labelKey, items) {
+        if (items.length === 0) return;
+        groups.push({ key: key, labelKey: labelKey, items: items });
+      };
+      pushGroup("staged", "changes.group.staged", Array.isArray(status.staged) ? status.staged : []);
+      pushGroup("unstaged", "changes.group.unstaged", Array.isArray(status.unstaged) ? status.unstaged : []);
+      pushGroup("untracked", "changes.group.untracked", Array.isArray(status.untracked) ? status.untracked : []);
+      pushGroup("conflicted", "changes.group.conflicted", Array.isArray(status.conflicted) ? status.conflicted : []);
+
+      const ariaLabel = t("chip.aria", {
+        branch: label,
+        count: changeCount,
+      });
+
+      const popover = open
+        ? h("div", { className: "dg-pop", role: "dialog", "aria-label": t("chip.popTitle") },
+          h("div", { className: "dg-pop-head" },
+            h("span", { className: "dg-chip-dot" + (changeCount > 0 ? " dg-chip-dot-dirty" : "") }),
+            h("span", { className: "dg-pop-branch", title: label }, label),
+            ahead > 0 ? h("span", { className: "dg-chip-ahead", title: t("chip.aheadTitle", { count: ahead }) }, "↑" + String(ahead)) : null,
+            behind > 0 ? h("span", { className: "dg-chip-behind", title: t("chip.behindTitle", { count: behind }) }, "↓" + String(behind)) : null,
+            upstream === "" ? h("span", { className: "dg-pop-upstream dg-muted" }, t("chip.noUpstream")) : h("span", { className: "dg-pop-upstream dg-muted", title: upstream }, upstream)),
+          changeCount === 0
+            ? h("div", { className: "dg-pop-clean" }, t("chip.clean"))
+            : h("div", { className: "dg-pop-groups" }, groups.map(function (group) {
+              return h("div", { className: "dg-pop-group", key: group.key },
+                h("div", { className: "dg-pop-group-title" },
+                  h("span", null, t(group.labelKey)),
+                  h("span", { className: "dg-pop-group-count" }, String(group.items.length))),
+                group.items.slice(0, 8).map(function (item) {
+                  const meta = statusMeta(item !== null && typeof item === "object" ? item.status : undefined, group.key);
+                  const path = item !== null && typeof item === "object" && isNonEmptyString(item.path) ? item.path : "";
+                  return h("div", { className: "dg-pop-row", key: group.key + ":" + path, title: path },
+                    h("span", { className: "dg-badge dg-badge-" + meta.tone }, meta.letter),
+                    h("span", { className: "dg-pop-path" }, path));
+                }),
+                group.items.length > 8 ? h("div", { className: "dg-pop-more" }, t("chip.more", { count: group.items.length - 8 })) : null);
+            })),
+          h("div", { className: "dg-pop-foot" }, t("chip.popHint")))
+        : null;
+
+      return h("div", { className: "dg-chip-root", ref: rootRef },
+        h("button", {
+          type: "button",
+          className: "dg-chip" + (changeCount > 0 ? " dg-chip-dirty" : ""),
+          "aria-label": ariaLabel,
+          "aria-expanded": open ? "true" : "false",
+          title: ariaLabel,
+          onClick: function () {
+            setOpen(!open);
+          },
+        },
+          h("span", { className: "dg-chip-dot" + (changeCount > 0 ? " dg-chip-dot-dirty" : "") }),
+          h("span", { className: "dg-chip-branch" }, label),
+          ahead > 0 ? h("span", { className: "dg-chip-ahead" }, "↑" + String(ahead)) : null,
+          behind > 0 ? h("span", { className: "dg-chip-behind" }, "↓" + String(behind)) : null,
+          changeCount > 0 ? h("span", { className: "dg-chip-count" }, String(changeCount)) : null),
+        popover);
     }
 
     // -------------------------------------------------------------------------
@@ -1607,12 +2134,30 @@ window.__ModuleLoader__.load({
       ".dg-file-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
       ".dg-file-row-selected{background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28))}",
       ".dg-file-row:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
-      ".dg-badge{flex:none;width:15px;height:15px;border-radius:4px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));color:var(--dsw-alias-label-primary,#1f2328);font-size:10px;font-weight:600;line-height:15px;text-align:center}",
-      ".dg-badge-add{background:rgba(46,160,67,.2)}",
-      ".dg-badge-del{background:rgba(248,81,73,.2)}",
-      ".dg-badge-mod{background:rgba(210,153,34,.22)}",
-      ".dg-badge-conflict{background:rgba(163,113,247,.24)}",
-      ".dg-badge-untracked{background:rgba(110,118,129,.2)}",
+      ".dg-badge{flex:none;width:15px;height:15px;border-radius:4px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));color:var(--dsw-alias-label-primary,#1f2328);font-size:10px;font-weight:700;line-height:14px;text-align:center;border:1px solid transparent;box-sizing:border-box}",
+      // VSCode-like SCM status colours: M amber, A/untracked green, D red, R/C blue, conflict orange.
+      ".dg-badge-mod{background:rgba(210,153,34,.16);border-color:rgba(210,153,34,.42);color:#9a6700}",
+      ".dg-badge-add{background:rgba(46,160,67,.14);border-color:rgba(46,160,67,.4);color:#116329}",
+      ".dg-badge-del{background:rgba(248,81,73,.14);border-color:rgba(248,81,73,.42);color:#cf222e}",
+      ".dg-badge-renamed{background:rgba(47,129,247,.14);border-color:rgba(47,129,247,.4);color:#0950b8}",
+      ".dg-badge-conflict{background:rgba(240,136,62,.16);border-color:rgba(240,136,62,.45);color:#bc4c00}",
+      ".dg-badge-untracked{background:rgba(63,185,80,.14);border-color:rgba(63,185,80,.36);color:#1a7f37}",
+      // Dark theme keeps the hues but lifts the foreground so they read on the dark panel.
+      "body[data-ds-dark-theme] .dg-badge-mod{color:#e3b341;border-color:rgba(227,179,65,.45);background:rgba(227,179,65,.16)}",
+      "body[data-ds-dark-theme] .dg-badge-add{color:#56d364;border-color:rgba(86,211,100,.4);background:rgba(86,211,100,.14)}",
+      "body[data-ds-dark-theme] .dg-badge-del{color:#ff7b72;border-color:rgba(255,123,114,.42);background:rgba(255,123,114,.14)}",
+      "body[data-ds-dark-theme] .dg-badge-renamed{color:#79c0ff;border-color:rgba(121,192,255,.4);background:rgba(121,192,255,.14)}",
+      "body[data-ds-dark-theme] .dg-badge-conflict{color:#ffa657;border-color:rgba(255,166,87,.45);background:rgba(255,166,87,.16)}",
+      "body[data-ds-dark-theme] .dg-badge-untracked{color:#56d364;border-color:rgba(86,211,100,.36);background:rgba(86,211,100,.12)}",
+      // The file name follows the status tone for additions/deletions/renames; a conflict is bold.
+      ".dg-file-row-tone-del .dg-file-name{color:#cf222e}",
+      "body[data-ds-dark-theme] .dg-file-row-tone-del .dg-file-name{color:#ff7b72}",
+      ".dg-file-row-tone-add .dg-file-name,.dg-file-row-tone-untracked .dg-file-name{color:#1a7f37}",
+      "body[data-ds-dark-theme] .dg-file-row-tone-add .dg-file-name,body[data-ds-dark-theme] .dg-file-row-tone-untracked .dg-file-name{color:#56d364}",
+      ".dg-file-row-tone-renamed .dg-file-name{color:#0950b8}",
+      "body[data-ds-dark-theme] .dg-file-row-tone-renamed .dg-file-name{color:#79c0ff}",
+      ".dg-file-row-tone-conflict .dg-file-name{color:#bc4c00;font-weight:600}",
+      "body[data-ds-dark-theme] .dg-file-row-tone-conflict .dg-file-name{color:#ffa657}",
       ".dg-file-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;unicode-bidi:plaintext}",
       ".dg-file-orig{color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;margin-left:4px}",
       ".dg-row-actions{display:inline-flex;gap:3px;flex:none}",
@@ -1653,16 +2198,24 @@ window.__ModuleLoader__.load({
       ".dg-history-head{display:flex;align-items:center;gap:6px;padding:6px 8px;flex:none;border-bottom:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
       ".dg-select{flex:1 1 auto;min-width:0;height:24px;padding:0 4px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:12px}",
       ".dg-commit-list{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px 6px 10px}",
-      ".dg-commit-row{display:flex;flex-direction:column;gap:1px;padding:5px 6px;border-radius:6px;cursor:pointer;min-width:0}",
+      ".dg-commit-row{display:flex;align-items:stretch;gap:6px;padding:0 6px;border-radius:6px;cursor:pointer;min-width:0;height:44px}",
+      ".dg-commit-body{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0;flex:1 1 auto}",
+      ".dg-graph{flex:none;display:inline-flex;align-items:center;justify-content:center;align-self:stretch}",
+      ".dg-graph-svg{display:block}",
       ".dg-commit-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
       ".dg-commit-row:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
       ".dg-commit-line{display:flex;align-items:baseline;gap:6px;min-width:0}",
-      ".dg-sha{flex:none;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-sha{flex:none;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;color:#0969da}",
+      "body[data-ds-dark-theme] .dg-sha{color:#79c0ff}",
       ".dg-commit-subject{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}",
       ".dg-commit-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781);min-width:0}",
       ".dg-commit-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}",
       ".dg-commit-time{flex:none;font-variant-numeric:tabular-nums}",
-      ".dg-ref-tag{flex:none;padding:0 4px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:4px;color:var(--dsw-alias-label-secondary,#57606a);font-size:10px;line-height:14px}",
+      ".dg-ref-tag{flex:none;padding:0 4px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:4px;color:var(--dsw-alias-label-secondary,#57606a);font-size:10px;line-height:14px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-ref-head{color:#116329;border-color:rgba(46,160,67,.45);background:rgba(46,160,67,.12)}",
+      "body[data-ds-dark-theme] .dg-ref-head{color:#56d364;border-color:rgba(86,211,100,.4);background:rgba(86,211,100,.12)}",
+      ".dg-ref-remote{color:#0950b8;border-color:rgba(47,129,247,.4);background:rgba(47,129,247,.1)}",
+      "body[data-ds-dark-theme] .dg-ref-remote{color:#79c0ff;border-color:rgba(121,192,255,.36);background:rgba(121,192,255,.1)}",
       ".dg-load-more{padding:6px;text-align:center;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
       ".dg-detail{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}",
       ".dg-detail-scroll{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px 10px 14px}",
@@ -1678,6 +2231,34 @@ window.__ModuleLoader__.load({
       ".dg-file-table-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
       ".dg-file-table-row:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
       ".dg-numstat{flex:none;display:inline-flex;gap:5px;font-size:11px;font-variant-numeric:tabular-nums}",
+      // Session-header branch chip (VSCode status-bar idiom).
+      ".dg-chip-root{position:relative;display:inline-flex;align-items:center}",
+      ".dg-chip{display:inline-flex;align-items:center;gap:5px;min-height:24px;padding:1px 7px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary,#57606a);font:inherit;font-size:12px;line-height:18px;cursor:pointer;max-width:220px}",
+      ".dg-chip:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328)}",
+      ".dg-chip:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:0}",
+      ".dg-chip-dot{flex:none;width:7px;height:7px;border-radius:50%;background:#2da44e;box-shadow:0 0 0 2px rgba(46,160,67,.18)}",
+      ".dg-chip-dot-dirty{background:#d29922;box-shadow:0 0 0 2px rgba(210,153,34,.2)}",
+      ".dg-chip-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11.5px}",
+      ".dg-chip-count{flex:none;min-width:16px;padding:0 4px;border-radius:8px;background:rgba(210,153,34,.18);color:#9a6700;font-size:11px;line-height:15px;text-align:center;font-variant-numeric:tabular-nums}",
+      "body[data-ds-dark-theme] .dg-chip-count{background:rgba(227,179,65,.18);color:#e3b341}",
+      ".dg-chip-ahead{flex:none;color:#1a7f37;font-size:11px;font-variant-numeric:tabular-nums}",
+      "body[data-ds-dark-theme] .dg-chip-ahead{color:#56d364}",
+      ".dg-chip-behind{flex:none;color:#cf222e;font-size:11px;font-variant-numeric:tabular-nums}",
+      "body[data-ds-dark-theme] .dg-chip-behind{color:#ff7b72}",
+      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:60;box-sizing:border-box;width:320px;max-width:min(420px,80vw);max-height:min(440px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-specific-menu,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
+      ".dg-pop-head{display:flex;align-items:center;gap:6px;padding:2px 4px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
+      ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:12px;font-weight:600}",
+      ".dg-pop-upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin-left:auto}",
+      ".dg-pop-clean{padding:12px 4px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-pop-groups{padding-top:6px}",
+      ".dg-pop-group{margin-bottom:6px}",
+      ".dg-pop-group-title{display:flex;align-items:center;justify-content:space-between;padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;letter-spacing:.02em}",
+      ".dg-pop-group-count{font-variant-numeric:tabular-nums}",
+      ".dg-pop-row{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:5px;min-width:0}",
+      ".dg-pop-row:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14))}",
+      ".dg-pop-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;unicode-bidi:plaintext}",
+      ".dg-pop-more{padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px}",
+      ".dg-pop-foot{margin-top:4px;padding:6px 4px 2px;border-top:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px}",
       ".dg-title-icon{flex:none;width:16px;height:16px;color:var(--dsw-alias-label-secondary,#57606a)}",
       ".dg-title-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".dg-title-branch{flex:none;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;border-radius:5px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.2));color:var(--dsw-alias-label-secondary,#57606a);font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;line-height:16px}",
@@ -1724,6 +2305,16 @@ window.__ModuleLoader__.load({
     const zh = {
       "type.label": "Git",
       "guide.title": "源代码管理",
+      // Session-header branch chip.
+      "chip.aria": "Git 分支 {branch}，{count} 项变更",
+      "chip.detached": "游离 HEAD",
+      "chip.noUpstream": "无上游",
+      "chip.clean": "工作区干净，没有待提交的变更。",
+      "chip.popTitle": "源代码管理",
+      "chip.popHint": "在右侧栏「源代码管理」中查看完整变更与提交历史。",
+      "chip.aheadTitle": "领先上游 {count} 个提交",
+      "chip.behindTitle": "落后上游 {count} 个提交",
+      "chip.more": "还有 {count} 项…",
       "guide.description": "查看分支、工作区变更与提交历史，暂存、放弃并提交更改",
       "tabs.aria": "Git 视图切换",
       "tabs.changes": "变更",
@@ -1820,6 +2411,16 @@ window.__ModuleLoader__.load({
     const en = {
       "type.label": "Git",
       "guide.title": "Source Control",
+      // Session-header branch chip.
+      "chip.aria": "Git branch {branch}, {count} changes",
+      "chip.detached": "detached HEAD",
+      "chip.noUpstream": "no upstream",
+      "chip.clean": "Working tree clean, nothing to commit.",
+      "chip.popTitle": "Source Control",
+      "chip.popHint": "Open the Source Control tab in the right sidebar for the full change list and history.",
+      "chip.aheadTitle": "{count} commits ahead of upstream",
+      "chip.behindTitle": "{count} commits behind upstream",
+      "chip.more": "{count} more…",
       "guide.description": "Review branches, working-tree changes and commit history; stage, discard and commit",
       "tabs.aria": "Git view switcher",
       "tabs.changes": "Changes",
@@ -1938,6 +2539,16 @@ window.__ModuleLoader__.load({
       }, "dsh-git: dictionaries");
       const t = typeof ctx.locale.bind === "function" ? ctx.locale.bind(NS) : defaultTranslate;
       ctx.effect(function () {
+        return ctx.slots.inject("conversation.session.header.actions", function () {
+          return ctx.slots.register({
+            name: "conversation.session.header.actions",
+            id: "git-branch",
+            order: 15,
+            locale: NS,
+          }, GitBranchChip);
+        });
+      }, "dsh-git: header branch chip");
+      ctx.effect(function () {
         return ctx.sidebarRightTabs.register({
           id: ID,
           kind: KIND,
@@ -1988,6 +2599,10 @@ window.__ModuleLoader__.load({
         ROUTE_PREFIX: ROUTE_PREFIX,
         GitBody: GitBody,
         GitTitle: GitTitle,
+        GitBranchChip: GitBranchChip,
+        computeLanes: computeLanes,
+        LANE_COLORS: LANE_COLORS,
+        refTone: refTone,
         ChangesPane: ChangesPane,
         DiffView: DiffView,
         HistoryPane: HistoryPane,

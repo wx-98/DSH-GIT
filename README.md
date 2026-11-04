@@ -7,7 +7,10 @@
 
 ## 能力
 
+- **会话头部常驻分支芯片**：会话标题栏直接显示 `● main 3`（分支 + 变更数 + ahead/behind），点开是工作区变更摘要 —— 不用打开面板就知道当前在哪个分支
 - **当前分支状态**：分支名、当前 commit、上游分支、ahead / behind 计数；detached HEAD 与空仓库都能正确显示
+- **VSCode 风格配色**：状态字母按语义着色（M 琥珀、A/未跟踪 绿、D 红、R/C 蓝、冲突 橙），文件名跟随状态着色，深浅主题各有一套；`HEAD -> main` / 远端引用各有颜色
+- **提交图（GRAPH）**：历史列表左侧绘制彩色泳道（圆点 + 竖线 + 合并/分叉曲线），列号跨行稳定，分支线不跳色、不左右抖动
 - **工作区变更**：按 VSCode 语义分成 **已暂存 / 变更 / 未跟踪 / 冲突** 四组，含状态字母（M/A/D/R/C/U/?）与重命名原路径
 - **逐文件 diff**：结构化 unified diff（hunk + 行号 + 增删着色），支持工作区 / 已暂存 / 未跟踪（合成）/ 指定提交四种视角；二进制文件有明确提示
 - **写操作**：暂存、取消暂存、放弃变更（二次确认）、填写提交信息并提交（Ctrl/Cmd+Enter）
@@ -57,9 +60,13 @@ pwsh -File .\tools\install-desktop.ps1 -RemoveLivePatch
 
 ## 界面
 
-| 变更 | 历史 | diff |
+| 变更（配色） | 历史（提交图） | diff |
 |---|---|---|
 | ![变更](docs/ui-git-changes.png) | ![历史](docs/ui-git-history.png) | ![diff](docs/ui-git-diff.png) |
+
+| 会话头部分支芯片 | 芯片弹出的变更摘要 | 带分支的提交图 |
+|---|---|---|
+| ![分支芯片](docs/ui-header-chip.png) | ![芯片摘要](docs/ui-chip-popover.png) | ![提交图](docs/ui-git-graph.png) |
 
 ## 架构
 
@@ -68,7 +75,8 @@ package.json        插件包清单（exports / dsh.bundle.patch / dsh.client）
 cordis.patch.yml    Loader 行插入（Host 半边 + 浏览器半边）
 index.js            Host 半边：/git/* 路由（连接栅栏、写操作串行队列、错误映射）
 lib/git.js          git CLI 封装与解析（status/diff/log/commit/branches/stage/...）
-client.js           浏览器半边：右侧栏标签类型、Git 面板、diff 视图
+client.js           浏览器半边：右侧栏标签类型、Git 面板、提交图、diff 视图、头部分支芯片
+tools/graph-lanes.mjs  提交图泳道算法（纯函数，client.js 内联同一份实现）
 locale/             插件管理页展示文案（zh/en）
 docs/contract.md    Host ⇄ Client 的接口契约（单一事实来源）
 tools/verify-installed.mjs  安装后对真实 DSH 实例的端到端自检

@@ -335,6 +335,12 @@ function useSessionCwd(useSessions, sessionId) {
 - **没有 portal、没有遮罩、没有抽屉**：面板就是右侧栏内容区，需要 \`height: 100%\`、
   内部 flex 纵向布局、列表区 \`overflow: auto\`、\`min-height: 0\`，避免撑破侧栏。
 
+### 2.2b 会话头部分支芯片（`conversation.session.header.actions`）
+
+同一份浏览器半边还注册一个头部条目（`id: "git-branch"`, `order: 15`），在会话标题栏常驻：
+`● <分支> <↑ahead> <↓behind> <变更数>`；非 git 仓库时渲染 `null`；点击弹出只读的变更摘要
+（分组计数 + 最多 8 个文件 + 提示去右侧栏看完整面板）；10s 轮询 `/git/status`，页面隐藏时跳过。
+
 ### 2.3 UI 布局（VSCode SCM 风格，面板内）
 
 \`\`\`

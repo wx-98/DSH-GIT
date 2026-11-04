@@ -1,8 +1,8 @@
 {
   "name": "dsh-git",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Git source-control plugin for the DeepSeek Harness Web GUI: a VSCode-like right-sidebar panel with branch status, working-tree changes (stage/unstage/discard/commit) and commit history with per-file diffs.",
+  "description": "Git source-control plugin for the DeepSeek Harness Web GUI: a VSCode-like right-sidebar panel with colour-coded changes, a commit graph, branch status, staging/commit actions and per-file diffs, plus a branch chip in the conversation header.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -15,7 +15,8 @@
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "tools/graph-lanes.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -34,7 +35,7 @@
     }
   },
   "scripts": {
-    "test": "node --test test/host.test.js test/client.test.js"
+    "test": "node --test test/host.test.js test/client.test.js test/graph-lanes.test.js"
   },
   "license": "MIT",
   "keywords": [
