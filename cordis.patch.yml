@@ -3,4 +3,4 @@
 # discovered from this package's `dsh.client` declaration.
 - insert:
     - id: git
-      name: '@wx-98/dsh-git'
+      name: 'dsh-git-control'

@@ -1,4 +1,4 @@
-# dsh-git — 内部契约（Host ⇄ Client 单一事实来源）
+# dsh-git-control — 内部契约（Host ⇄ Client 单一事实来源）
 
 > 本文件是 Host 半边（\`index.js\` / \`lib/git.js\`）与浏览器半边（\`client.js\`）之间
 > 唯一的接口契约。两侧独立实现，任何一侧改动都必须先改本文件。
@@ -6,13 +6,13 @@
 ## 0. 运行环境事实（已验证，不要臆测）
 
 - DSH 版本：**0.1.2-rc.1**（\`@deepseek-ai/dsh-base\` 等包版本）。
-- 插件包名：\`dsh-git\`，ESM（\`"type": "module"\`），**无构建步骤、无运行时依赖**。
+- 插件包名：\`dsh-git-control\`，ESM（\`"type": "module"\`），**无构建步骤、无运行时依赖**。
 - Host 半边入口：\`index.js\`（\`export const name\`, \`export const inject\`, \`export function apply(ctx, config)\`）。
 - 浏览器半边入口：\`client.js\`，必须是自包含的单文件 classic 脚本，形如：
 
 \`\`\`js
 window.__ModuleLoader__.load({
-  id: "dsh-git",
+  id: "dsh-git-control",
   factory(require) {
     const React = require("react");
     const ReactDOM = require("react-dom");
@@ -269,7 +269,7 @@ export function apply(ctx) {
 
 #### GET /git/health
 
-→ \`{ "ok": true, "plugin": "@wx-98/dsh-git", "version": "0.1.0", "git": "2.54.0.windows.1" }\`
+→ \`{ "ok": true, "plugin": "dsh-git-control", "version": "0.1.0", "git": "2.54.0.windows.1" }\`
 （用于安装自检：\`git --version\` 拿不到时 \`git: null\`，仍返回 ok:true。）
 
 ### 1.4 安全边界
@@ -292,7 +292,7 @@ export function apply(ctx) {
 
 \`\`\`js
 window.__ModuleLoader__.load({
-  id: "dsh-git",
+  id: "dsh-git-control",
   factory(require) {
     var module = { exports: {} };
     var exports = module.exports;
@@ -301,21 +301,21 @@ window.__ModuleLoader__.load({
     // ... 全部代码 ...
     const inject = ["slots", "locale", "sidebarRightTabs", "sidebarRight", "shortcuts"];
     function apply(ctx) {
-      ctx.effect(() => { installStyles(); return () => removeStyles(); }, "dsh-git: styles");
-      ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-git: dictionaries");
+      ctx.effect(() => { installStyles(); return () => removeStyles(); }, "dsh-git-control: styles");
+      ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-git-control: dictionaries");
       const t = ctx.locale.bind(NS);
       ctx.effect(() => ctx.sidebarRightTabs.register({
-        id: ID,                      // "dsh-git"
+        id: ID,                      // "dsh-git-control"
         kind: KIND,                  // "git"
         keepMounted: true,
         title: () => t("type.label"),
         guide: [{ id: "git", order: 10, title: () => t("guide.title"),
                   description: () => t("guide.description"), icon: GitGlyph }],
-      }), "dsh-git: tab type");
+      }), "dsh-git-control: tab type");
       ctx.effect(() => ctx.slots.inject(BODY_SLOT, () => ctx.slots.register(
-        { name: BODY_SLOT, key: ID, locale: NS }, GitBody)), "dsh-git: body");
+        { name: BODY_SLOT, key: ID, locale: NS }, GitBody)), "dsh-git-control: body");
       ctx.effect(() => ctx.slots.inject(TITLE_SLOT, () => ctx.slots.register(
-        { name: TITLE_SLOT, key: ID, locale: NS }, GitTitle)), "dsh-git: title");
+        { name: TITLE_SLOT, key: ID, locale: NS }, GitTitle)), "dsh-git-control: title");
     }
     exports.apply = apply; exports.inject = inject;
     return module.exports;
@@ -325,7 +325,7 @@ window.__ModuleLoader__.load({
 
 常量：
 \`\`\`js
-const ID = "dsh-git";
+const ID = "dsh-git-control";
 const KIND = "git";
 const NS = "git";
 const BODY_SLOT = "sidebar.right.pane.tab";
@@ -405,7 +405,7 @@ Diff 视图在同一面板内**覆盖**列表区域（顶部「← 返回」按�
   \`--dsw-alias-fill-l1\`、\`--dsw-alias-fill-l2\`、\`--dsw-alias-border-l1\`、\`--dsw-alias-border-l2\`、
   \`--dsw-elevation-prominent\`、\`--dsw-specific-menu\`。
 - 增删行背景：\`rgba(46,160,67,.16)\` / \`rgba(248,81,73,.16)\`。
-- 样式通过 \`<style data-plugin="dsh-git">\` 注入一次（\`installStyles\`/\`removeStyles\` 在 \`apply\` 的 effect 里），
+- 样式通过 \`<style data-plugin="dsh-git-control">\` 注入一次（\`installStyles\`/\`removeStyles\` 在 \`apply\` 的 effect 里），
   类名全部 \`dg-\` 前缀；mono 字体 \`var(--dsh-font-mono, ui-monospace, monospace)\` 仅用于 sha/路径/diff。
 - 不修改 \`document.body\` 的样式、不监听 \`window\` 全局事件（除必要的快捷键监听并在卸载时移除）。
 
@@ -423,13 +423,13 @@ Diff 视图在同一面板内**覆盖**列表区域（顶部「← 返回」按�
   覆盖第 1 节全部路由与边界。
 - \`test/client.test.js\`（Client 同事）：
   1. 假 \`window\`（\`{ __ModuleLoader__: { load: (r) => captured = r } }\`）执行 \`client.js\` 源码，
-     断言 \`captured.id === "dsh-git"\`；
+     断言 \`captured.id === "dsh-git-control"\`；
   2. stub \`require\` 返回真实 react/react-dom（从 \`C:\Users\wangxiao13\.dsh\profiles\node_modules\` 用
      \`createRequire\` 绝对路径加载，失败则 \`t.skip()\`），调用 factory，断言导出含 \`apply\` 与 \`inject\`；
   3. 假 ctx 调 \`apply\`，断言：locale.register 收到 zh/en 且键集相同；
-     \`sidebarRightTabs.register\` 收到 \`{id:"dsh-git", kind:"git"}\`；
+     \`sidebarRightTabs.register\` 收到 \`{id:"dsh-git-control", kind:"git"}\`；
      \`slots.register\` 被调用两次（body + title），名字分别为 \`sidebar.right.pane.tab\` /
-     \`sidebar.right.pane.tab.title\`，且 \`key === "dsh-git"\`；
+     \`sidebar.right.pane.tab.title\`，且 \`key === "dsh-git-control"\`；
   4. \`react-dom/server.renderToStaticMarkup\` 渲染 \`GitTitle\`（props 带假 \`useTabInfo\`/\`t\`），
      断言 HTML 含 \`dg-\` 与 "Git"；
   5. 纯函数单测（diff 行分类、状态字母映射、相对时间、basename）。

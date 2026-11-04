@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * dsh-git 安装后自检脚本（真实 DSH Host 端到端验证）。
+ * dsh-git-control 安装后自检脚本（真实 DSH Host 端到端验证）。
  *
  * 用法：
  *   node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=XXXX"
  *
  * 它做四件事：
  *   1. 用启动 token 换取浏览器认证 cookie（与真实 GUI 同一条路径）；
- *   2. 从 index 的 globalThis["__DSH_BOOT__"] 断言 dsh-git 已进入客户端入口图，
+ *   2. 从 index 的 globalThis["__DSH_BOOT__"] 断言 dsh-git-control 已进入客户端入口图，
  *      并拉取它被服务的 /plugins 组合脚本，断言内容确实是本插件的浏览器半边；
  *   3. 生成一个临时 git 仓库（含修改/未跟踪/重命名/中文路径），逐条驱动 /git/* 路由，
  *      校验 docs/contract.md 第 1 节的 JSON 形状；
@@ -118,7 +118,7 @@ async function authenticate(url) {
 // ---------------------------------------------------------------------------
 
 /**
- * 从 index HTML 中解析 __DSH_BOOT__ 并返回 dsh-git 行。
+ * 从 index HTML 中解析 __DSH_BOOT__ 并返回 dsh-git-control 行。
  * @param {string} html
  */
 function findBootEntry(html) {
@@ -151,7 +151,7 @@ function findBootEntry(html) {
   if (end < 0) throw new Error("__DSH_BOOT__ JSON 不完整");
   const boot = JSON.parse(html.slice(cursor, end));
   const entries = Array.isArray(boot.entries) ? boot.entries : [];
-  const entry = entries.find((item) => item && item.id === "@wx-98/dsh-git");
+  const entry = entries.find((item) => item && item.id === "dsh-git-control");
   return { boot, entry, entries };
 }
 
@@ -236,7 +236,7 @@ check("客户端入口图包含 dsh-git", async () => {
   const { boot, entry, entries } = findBootEntry(state.html);
   state.boot = boot;
   assert(entries.length > 20, "入口图条目过少，疑似未正确组合：" + entries.length);
-  assert(entry !== undefined, "入口图里没有 id 为 @wx-98/dsh-git 的条目");
+  assert(entry !== undefined, "入口图里没有 id 为 dsh-git-control 的条目");
   assert(typeof entry.url === "string" && entry.url.length > 0, "dsh-git 条目缺少 url");
   state.entry = entry;
 });
@@ -247,7 +247,7 @@ check("插件浏览器半边被 /plugins 正确服务", async () => {
   assert(response.status === 200, "bundle 状态码应为 200，实际 " + response.status + "（url " + url + "）");
   const source = await response.text();
   assert(source.includes("__ModuleLoader__.load"), "bundle 里没有 __ModuleLoader__.load");
-  assert(source.includes('"@wx-98/dsh-git"'), "bundle 里没有包标识");
+  assert(source.includes('"dsh-git-control"'), "bundle 里没有包标识");
   state.bundleSource = source;
 });
 
@@ -255,7 +255,7 @@ check("GET /git/health", async () => {
   const { status, body } = await state.session.json("/git/health");
   assert(status === 200, "状态码应为 200，实际 " + status);
   assert(body && body.ok === true, "ok 应为 true");
-  assert(body.plugin === "@wx-98/dsh-git", "plugin 字段应为 @wx-98/dsh-git，实际 " + JSON.stringify(body.plugin));
+  assert(body.plugin === "dsh-git-control", "plugin 字段应为 dsh-git-control，实际 " + JSON.stringify(body.plugin));
   assert(typeof body.version === "string" && body.version.length > 0, "缺少 version");
   assert("git" in body, "缺少 git 字段");
 });

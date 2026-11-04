@@ -1,10 +1,10 @@
-// Browser half of the dsh-git plugin.
+// Browser half of the dsh-git-control plugin.
 //
 // A single self-contained client bundle (classic script, no build step, no
 // dependencies beyond the shell's static "react" baseline). It registers one
 // right-sidebar tab type (kind: "git"), its panel body and its title chip:
 //
-//   * sidebarRightTabs.register  -> the tab type ("dsh-git" / "git")
+//   * sidebarRightTabs.register  -> the tab type ("dsh-git-control" / "git")
 //   * slots register "sidebar.right.pane.tab"        -> GitBody  (panel content)
 //   * slots register "sidebar.right.pane.tab.title"  -> GitTitle (title chip)
 //
@@ -12,7 +12,7 @@
 // docs/contract.md; when a route fails the panel keeps rendering and shows an
 // inline error banner with a retry action.
 window.__ModuleLoader__.load({
-  id: "@wx-98/dsh-git",
+  id: "dsh-git-control",
   factory(require) {
     const React = require("react");
     const h = React.createElement;
@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     /** This implementation's identity in the tab system and the body/title slot key. */
-    const ID = "@wx-98/dsh-git";
+    const ID = "dsh-git-control";
     /** The right-sidebar tab kind this package owns. */
     const KIND = "git";
     /** Locale namespace used for every visible string. */
@@ -4206,10 +4206,10 @@ function computeLanes(commits, options = {}) {
         return function () {
           removeStyles();
         };
-      }, "dsh-git: styles");
+      }, "dsh-git-control: styles");
       ctx.effect(function () {
         return ctx.locale.register(NS, { zh: zh, en: en });
-      }, "dsh-git: dictionaries");
+      }, "dsh-git-control: dictionaries");
       const t = typeof ctx.locale.bind === "function" ? ctx.locale.bind(NS) : defaultTranslate;
       ctx.effect(function () {
         return ctx.slots.inject("conversation.session.header.actions", function () {
@@ -4220,7 +4220,7 @@ function computeLanes(commits, options = {}) {
             locale: NS,
           }, GitBranchChip);
         });
-      }, "dsh-git: header branch chip");
+      }, "dsh-git-control: header branch chip");
       ctx.effect(function () {
         return ctx.sidebarRightTabs.register({
           id: ID,
@@ -4241,17 +4241,17 @@ function computeLanes(commits, options = {}) {
             icon: GitGlyph,
           }],
         });
-      }, "dsh-git: tab type");
+      }, "dsh-git-control: tab type");
       ctx.effect(function () {
         return ctx.slots.inject(BODY_SLOT, function () {
           return ctx.slots.register({ name: BODY_SLOT, key: ID, locale: NS }, GitBody);
         });
-      }, "dsh-git: body");
+      }, "dsh-git-control: body");
       ctx.effect(function () {
         return ctx.slots.inject(TITLE_SLOT, function () {
           return ctx.slots.register({ name: TITLE_SLOT, key: ID, locale: NS }, GitTitle);
         });
-      }, "dsh-git: title");
+      }, "dsh-git-control: title");
     }
 
     /** Offline test hook only: undefined unless the harness explicitly opts in. */

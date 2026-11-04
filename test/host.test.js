@@ -1,5 +1,5 @@
 /**
- * End-to-end tests for the dsh-git host half.
+ * End-to-end tests for the dsh-git-control host half.
  *
  * Every test creates a real temporary git repository, applies the plugin to a
  * fake cordis context, publishes the registered routes on a real node:http
@@ -322,7 +322,7 @@ test("GET /git/health reports the plugin and the git version", async (t) => {
   const response = await getJson(harness.base, "/git/health");
   assert.equal(response.status, 200);
   assert.equal(response.json.ok, true);
-  assert.equal(response.json.plugin, "@wx-98/dsh-git");
+  assert.equal(response.json.plugin, "dsh-git-control");
   assert.match(response.json.version, /^\d+\.\d+\.\d+/);
   assert.equal(typeof response.json.git, "string");
   assert.match(response.json.git, /^\d+\.\d+/);

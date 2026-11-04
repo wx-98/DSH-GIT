@@ -38,7 +38,7 @@
 ### 从 npm 安装（推荐）
 
 ```bash
-dsh plugin --profile desktop add @wx-98/dsh-git
+dsh plugin --profile desktop add dsh-git-control
 ```
 
 ### 从 GitHub 安装
@@ -50,7 +50,7 @@ dsh plugin --profile desktop add github:wx-98/DSH-GIT
 ### 本地目录安装（开发用）
 
 GUI：**Plugins → Add plugin → 本地绝对路径**，填本仓库目录（例如 `D:\code\DSH\Plugin\git`），
-安装后在 Plugins 页启用 `@wx-98/dsh-git` 这个 bundle row，刷新页面。
+安装后在 Plugins 页启用 `dsh-git-control` 这个 bundle row，刷新页面。
 
 > `desktop` profile 由 Electron 应用独占管理，CLI 会拒绝操作；此时用 GUI 安装，或运行本仓库的一键脚本：
 

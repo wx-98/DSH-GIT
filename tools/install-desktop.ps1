@@ -5,11 +5,12 @@
 .DESCRIPTION
   做三件事（幂等，可重复执行）：
     1. 在 profile 的 node_modules 里建立指向本目录的 junction（等价于 pnpm 的 link: 安装）；
-    2. 在 profile 的 package.json 里登记 dependencies['@wx-98/dsh-git'] 与 dsh.profile.bundles 中的 @wx-98/dsh-git；
+    2. 在 profile 的 package.json 里登记 dependencies 与 dsh.profile.bundles；
     3. 可选地往 profile 的 cordis.patch.yml 写一个 insert 行，让**正在运行**的 DSH 实例热加载 Host 半边。
 
   注意：desktop profile 由 Electron 应用独占管理，dsh CLI 会拒绝操作它，所以这里直接改文件。
   安装后需要**重启 DSH 应用**（或用 -LivePatch + 刷新页面）。
+  脚本会顺带清理历史包名（dsh-git、@wx-98/dsh-git）留下的 junction / 依赖 / bundle 行 / live patch 块。
 
 .PARAMETER Profile
   profile 目录，默认 $env:USERPROFILE\.dsh\profiles\desktop。
@@ -38,14 +39,10 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $packageJson = Join-Path $Profile 'package.json'
 $nodeModules = Join-Path $Profile 'node_modules'
-# Scoped package: node_modules/@wx-98/dsh-git
-$pkgName = '@wx-98/dsh-git'
-$pkgScope = '@wx-98'
-$pkgLeaf = 'dsh-git'
-$legacyName = 'dsh-git'
-$scopeDir = Join-Path $nodeModules $pkgScope
-$linkPath = Join-Path $scopeDir $pkgLeaf
-$legacyLinkPath = Join-Path $nodeModules $legacyName
+$pkgName = 'dsh-git-control'
+# Package names this plugin used before; their leftovers are removed on install.
+$legacyNames = @('dsh-git', '@wx-98/dsh-git')
+$linkPath = Join-Path $nodeModules $pkgName
 $patchFile = Join-Path $Profile 'cordis.patch.yml'
 
 if (-not (Test-Path -LiteralPath $packageJson)) { throw "找不到 profile: $Profile" }
@@ -53,15 +50,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $PluginDir 'package.json'))) { throw
 
 $pluginManifest = Get-Content -LiteralPath (Join-Path $PluginDir 'package.json') -Raw | ConvertFrom-Json
 if ($pluginManifest.name -ne $pkgName) { throw "插件包的 name 应为 $pkgName，实际为 $($pluginManifest.name)" }
-if (-not (Test-Path -LiteralPath $scopeDir)) { $null = New-Item -ItemType Directory -Path $scopeDir }
-# Remove a legacy unscoped link so the old identity cannot shadow the new one.
-if (Test-Path -LiteralPath $legacyLinkPath) {
-  $legacyItem = Get-Item -LiteralPath $legacyLinkPath -Force
-  if ($legacyItem.LinkType -eq 'Junction') {
-    # Remove-Item prompts on a link in non-interactive hosts; Directory.Delete
-    # removes the reparse point itself and never touches the target directory.
-    [System.IO.Directory]::Delete($legacyLinkPath, $false)
-    Write-Host "[-] 已移除旧 junction node_modules\$legacyName"
+
+# 0) remove links left by previous package names
+foreach ($legacy in $legacyNames) {
+  $legacyLink = Join-Path $nodeModules $legacy
+  if (Test-Path -LiteralPath $legacyLink) {
+    $item = Get-Item -LiteralPath $legacyLink -Force
+    if ($item.LinkType -eq 'Junction') {
+      # Remove-Item prompts on a link in non-interactive hosts; Directory.Delete
+      # removes the reparse point itself and never touches the target directory.
+      [System.IO.Directory]::Delete($legacyLink, $false)
+      Write-Host "[-] 已移除旧 junction node_modules\$legacy"
+    }
   }
 }
 
@@ -69,7 +69,7 @@ if (Test-Path -LiteralPath $legacyLinkPath) {
 if (Test-Path -LiteralPath $linkPath) {
   $existing = Get-Item -LiteralPath $linkPath -Force
   if ($existing.LinkType -eq 'Junction' -and $existing.Target -eq $PluginDir) {
-    Write-Host "[=] node_modules\$pkgScope\$pkgLeaf 已指向 $PluginDir"
+    Write-Host "[=] node_modules\$pkgName 已指向 $PluginDir"
   } else {
     throw "$linkPath 已存在且不是指向本目录的 junction，请先手工处理"
   }
@@ -86,17 +86,19 @@ $changed = $false
 if ($null -eq $manifest.dependencies) {
   $manifest | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{})
 }
-if ($manifest.dependencies.PSObject.Properties[$legacyName] -ne $null) {
-  $manifest.dependencies.PSObject.Properties.Remove($legacyName)
-  $changed = $true
-  Write-Host "[-] dependencies['$legacyName'] 已移除"
+foreach ($legacy in $legacyNames) {
+  if ($manifest.dependencies.PSObject.Properties[$legacy] -ne $null) {
+    $manifest.dependencies.PSObject.Properties.Remove($legacy)
+    $changed = $true
+    Write-Host "[-] dependencies['$legacy'] 已移除"
+  }
 }
 if ($manifest.dependencies.$pkgName -ne $depSpec) {
   $manifest.dependencies | Add-Member -NotePropertyName $pkgName -NotePropertyValue $depSpec -Force
   $changed = $true
   Write-Host "[+] dependencies['$pkgName'] = $depSpec"
 }
-$bundles = @($manifest.dsh.profile.bundles) | Where-Object { $_ -ne $legacyName }
+$bundles = @($manifest.dsh.profile.bundles) | Where-Object { $legacyNames -notcontains $_ }
 if ($bundles -notcontains $pkgName) {
   $manifest.dsh.profile.bundles = @($bundles + $pkgName)
   $changed = $true
@@ -106,7 +108,7 @@ if ($bundles -notcontains $pkgName) {
   $changed = $true
 }
 if ($changed) {
-  $backup = $packageJson + '.dsh-git-backup'
+  $backup = $packageJson + '.dsh-plugin-backup'
   if (-not (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $packageJson -Destination $backup }
   [System.IO.File]::WriteAllText($packageJson, ($manifest | ConvertTo-Json -Depth 32), $utf8NoBom)
   Write-Host "[+] 已写回 package.json（原文件备份为 $(Split-Path -Leaf $backup)）"
@@ -114,31 +116,37 @@ if ($changed) {
   Write-Host "[=] package.json 已登记 $pkgName"
 }
 
-# Remove the previous unscoped live-patch block (identity migration), if any.
+# 2b) remove live-patch blocks written for previous package names
 if (Test-Path -LiteralPath $patchFile) {
-  $existingPatch = Get-Content -LiteralPath $patchFile -Raw
-  $legacyMarker = '# >>> dsh-git live patch >>>'
-  $legacyPattern = '(?s)\r?\n?' + [regex]::Escape($legacyMarker) + '.*?# <<< dsh-git live patch <<<'
-  if ($existingPatch -match $legacyPattern) {
-    [System.IO.File]::WriteAllText($patchFile, [regex]::Replace($existingPatch, $legacyPattern, ''), $utf8NoBom)
-    Write-Host '[-] 已移除旧的 dsh-git live patch 块'
+  $patchContent = Get-Content -LiteralPath $patchFile -Raw
+  $touched = $false
+  foreach ($legacy in $legacyNames) {
+    $legacyMarker = '# >>> ' + $legacy + ' live patch >>>'
+    $legacyPattern = '(?s)\r?\n?' + [regex]::Escape($legacyMarker) + '.*?# <<< ' + [regex]::Escape($legacy) + ' live patch <<<'
+    if ($patchContent -match $legacyPattern) {
+      $patchContent = [regex]::Replace($patchContent, $legacyPattern, '')
+      $touched = $true
+      Write-Host "[-] 已移除旧的 $legacy live patch 块"
+    }
   }
+  if ($touched) { [System.IO.File]::WriteAllText($patchFile, $patchContent, $utf8NoBom) }
 }
 
-# 3) 可选的 live patch
-$marker = '# >>> @wx-98/dsh-git live patch >>>'
+# 3) optional live patch
+$marker = '# >>> ' + $pkgName + ' live patch >>>'
+$tail = '# <<< ' + $pkgName + ' live patch <<<'
 $block = @(
   $marker,
   '- insert:',
   '    - id: git',
-  "      name: '@wx-98/dsh-git'",
-  '# <<< @wx-98/dsh-git live patch <<<'
+  "      name: '$pkgName'",
+  $tail
 ) -join $nl
 
 if ($RemoveLivePatch) {
   if (Test-Path -LiteralPath $patchFile) {
     $content = Get-Content -LiteralPath $patchFile -Raw
-    $pattern = '(?s)\r?\n?' + [regex]::Escape($marker) + '.*?# <<< @wx-98/dsh-git live patch <<<'
+    $pattern = '(?s)\r?\n?' + [regex]::Escape($marker) + '.*?' + [regex]::Escape($tail)
     if ($content -match $pattern) {
       [System.IO.File]::WriteAllText($patchFile, [regex]::Replace($content, $pattern, ''), $utf8NoBom)
       Write-Host '[-] 已移除 cordis.patch.yml 中的 live patch 块'
@@ -150,7 +158,7 @@ if ($RemoveLivePatch) {
   $content = ''
   if (Test-Path -LiteralPath $patchFile) { $content = Get-Content -LiteralPath $patchFile -Raw }
   if ($content -notmatch [regex]::Escape($marker)) {
-    Copy-Item -LiteralPath $patchFile -Destination ($patchFile + '.dsh-git-backup') -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $patchFile -Destination ($patchFile + '.dsh-plugin-backup') -ErrorAction SilentlyContinue
     [System.IO.File]::WriteAllText($patchFile, ($content.TrimEnd() + $nl + $nl + $block + $nl), $utf8NoBom)
     Write-Host '[+] 已写入 live patch（运行中的实例会热加载 Host 半边）'
   } else {
