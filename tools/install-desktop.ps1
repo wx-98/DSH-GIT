@@ -33,6 +33,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $nl = [Environment]::NewLine
+# DSH reads these files as UTF-8; a BOM breaks its JSON/YAML parsers.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $packageJson = Join-Path $Profile 'package.json'
 $nodeModules = Join-Path $Profile 'node_modules'
@@ -106,7 +108,7 @@ if ($bundles -notcontains $pkgName) {
 if ($changed) {
   $backup = $packageJson + '.dsh-git-backup'
   if (-not (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $packageJson -Destination $backup }
-  $manifest | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $packageJson -Encoding utf8
+  [System.IO.File]::WriteAllText($packageJson, ($manifest | ConvertTo-Json -Depth 32), $utf8NoBom)
   Write-Host "[+] 已写回 package.json（原文件备份为 $(Split-Path -Leaf $backup)）"
 } else {
   Write-Host "[=] package.json 已登记 $pkgName"
@@ -118,7 +120,7 @@ if (Test-Path -LiteralPath $patchFile) {
   $legacyMarker = '# >>> dsh-git live patch >>>'
   $legacyPattern = '(?s)\r?\n?' + [regex]::Escape($legacyMarker) + '.*?# <<< dsh-git live patch <<<'
   if ($existingPatch -match $legacyPattern) {
-    [regex]::Replace($existingPatch, $legacyPattern, '') | Set-Content -LiteralPath $patchFile -Encoding utf8 -NoNewline
+    [System.IO.File]::WriteAllText($patchFile, [regex]::Replace($existingPatch, $legacyPattern, ''), $utf8NoBom)
     Write-Host '[-] 已移除旧的 dsh-git live patch 块'
   }
 }
@@ -138,7 +140,7 @@ if ($RemoveLivePatch) {
     $content = Get-Content -LiteralPath $patchFile -Raw
     $pattern = '(?s)\r?\n?' + [regex]::Escape($marker) + '.*?# <<< @wx-98/dsh-git live patch <<<'
     if ($content -match $pattern) {
-      [regex]::Replace($content, $pattern, '') | Set-Content -LiteralPath $patchFile -Encoding utf8 -NoNewline
+      [System.IO.File]::WriteAllText($patchFile, [regex]::Replace($content, $pattern, ''), $utf8NoBom)
       Write-Host '[-] 已移除 cordis.patch.yml 中的 live patch 块'
     } else {
       Write-Host '[=] cordis.patch.yml 里没有 live patch 块'
@@ -149,7 +151,7 @@ if ($RemoveLivePatch) {
   if (Test-Path -LiteralPath $patchFile) { $content = Get-Content -LiteralPath $patchFile -Raw }
   if ($content -notmatch [regex]::Escape($marker)) {
     Copy-Item -LiteralPath $patchFile -Destination ($patchFile + '.dsh-git-backup') -ErrorAction SilentlyContinue
-    ($content.TrimEnd() + $nl + $nl + $block + $nl) | Set-Content -LiteralPath $patchFile -Encoding utf8 -NoNewline
+    [System.IO.File]::WriteAllText($patchFile, ($content.TrimEnd() + $nl + $nl + $block + $nl), $utf8NoBom)
     Write-Host '[+] 已写入 live patch（运行中的实例会热加载 Host 半边）'
   } else {
     Write-Host '[=] live patch 块已存在'
