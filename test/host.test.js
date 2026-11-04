@@ -1081,6 +1081,28 @@ test("parseUnifiedDiff ignores no-newline markers and detects binary diffs", () 
   assert.ok(truncated.additions <= 9);
 });
 
+test("parseUnifiedDiff never treats a quoted Binary files marker inside a hunk as binary", () => {
+  // Regression: the marker regex used to be unanchored, so a text file whose
+  // content spelled "Binary files ... differ" (diff viewers, fixtures, this
+  // module's own regex) was reported as a binary diff with zero hunks.
+  const diff = [
+    "diff --git a/lib/view.js b/lib/view.js",
+    "--- a/lib/view.js",
+    "+++ b/lib/view.js",
+    "@@ -1,1 +1,3 @@",
+    " const marker = 1;",
+    '+const hint = "Binary files a/x and b/y differ";',
+    "+const other = 2;",
+  ].join("\n");
+  const parsed = parseUnifiedDiff(diff);
+  assert.equal(parsed.binary, false, "quoted marker must not mark the diff binary");
+  assert.equal(parsed.hunks.length, 1);
+  assert.equal(parsed.additions, 2);
+  assert.equal(parsed.deletions, 0);
+  // A real git marker still wins.
+  assert.equal(parseUnifiedDiff("Binary files a/b.bin and b/b.bin differ\n").binary, true);
+});
+
 test("parseNumstat and parseNameStatus join per-file counters", () => {
   const numstat = "-\t-\tbin.dat\u00001\t1\tkeep.txt\u00001\t0\t\u0000a.txt\u0000renamed.txt\u0000";
   const nameStatus = "M\u0000bin.dat\u0000M\u0000keep.txt\u0000R073\u0000a.txt\u0000renamed.txt\u0000";

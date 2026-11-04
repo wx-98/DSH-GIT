@@ -1,6 +1,6 @@
 {
   "name": "dsh-git",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Git source-control plugin for the DeepSeek Harness Web GUI: a VSCode-like right-sidebar panel with branch status, working-tree changes (stage/unstage/discard/commit) and commit history with per-file diffs.",
   "exports": {

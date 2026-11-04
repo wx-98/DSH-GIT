@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Git",
-    "description": "Shows the current branch and change count in the session header; opens a right-side drawer with working-tree changes (stage/unstage/discard/commit) plus commit history and per-file diffs."
+    "description": "VSCode-like source control panel in the right sidebar: current branch with ahead/behind, working-tree changes (stage/unstage/discard/commit), commit history with per-file diffs, and branch switching."
   }
 }

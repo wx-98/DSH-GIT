@@ -885,7 +885,7 @@ window.__ModuleLoader__.load({
             }
           },
         }),
-        h("div", { className: "dg-commit-row" },
+        h("div", { className: "dg-commit-actions" },
           h("button", {
             type: "button",
             className: "dg-btn dg-btn-primary",
@@ -1584,7 +1584,7 @@ window.__ModuleLoader__.load({
       ".dg-textarea{width:100%;box-sizing:border-box;min-height:54px;max-height:140px;resize:vertical;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:8px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:12px;line-height:17px;outline:none}",
       ".dg-textarea::placeholder{color:var(--dsw-alias-label-tertiary,#6e7781)}",
       ".dg-textarea:focus{border-color:var(--dsw-alias-border-l2,rgba(0,0,0,.22))}",
-      ".dg-commit-row{display:flex;align-items:center;gap:8px;min-width:0}",
+      ".dg-commit-actions{display:flex;align-items:center;gap:8px;min-width:0}",
       ".dg-hint{flex:1 1 auto;min-width:0;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#6e7781);overflow-wrap:anywhere}",
       ".dg-btn{flex:none;padding:3px 10px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:12px;line-height:18px;cursor:pointer}",
       ".dg-btn:hover:not(:disabled){background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28))}",

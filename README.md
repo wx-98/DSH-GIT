@@ -49,10 +49,17 @@ pwsh -File .\tools\install-desktop.ps1 -RemoveLivePatch
 ## 使用
 
 1. 打开任意会话（Git 面板以**会话 cwd** 为仓库根）；
-2. 右侧栏点 **+** → 标签向导里选 **Git**；
+2. 打开右侧边栏 → 点 **+** → 在标签向导里选 **源代码管理**（标签标题显示为 `Git` + 当前分支）；
 3. **变更**标签：填写提交信息 → 暂存/放弃文件 → 提交；
 4. **历史**标签：浏览提交、点开看详情与逐文件 diff；
 5. 顶部摘要行的刷新按钮可手动刷新，分支下拉可切换分支。
+
+
+## 界面
+
+| 变更 | 历史 | diff |
+|---|---|---|
+| ![变更](docs/ui-git-changes.png) | ![历史](docs/ui-git-history.png) | ![diff](docs/ui-git-diff.png) |
 
 ## 架构
 
