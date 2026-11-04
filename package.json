@@ -1,8 +1,21 @@
 {
-  "name": "dsh-git",
+  "name": "@wx-98/dsh-git",
   "version": "0.4.0",
   "type": "module",
   "description": "Git source-control plugin for the DeepSeek Harness Web GUI: IDEA-style log view (branch tree, column list, multi-colour graph, merge dimming, date filters, keyboard navigation), colour-coded change tree with hunk staging, amend, stash, and an accurate session-header branch chip with switching and management.",
+  "license": "MIT",
+  "author": "wx-98",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wx-98/DSH-GIT.git"
+  },
+  "homepage": "https://github.com/wx-98/DSH-GIT#readme",
+  "bugs": {
+    "url": "https://github.com/wx-98/DSH-GIT/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -34,15 +47,20 @@
       ]
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "test": "node --test test/host.test.js test/client.test.js test/graph-lanes.test.js"
   },
-  "license": "MIT",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "git",
-    "source-control"
+    "source-control",
+    "vscode",
+    "idea"
   ]
 }

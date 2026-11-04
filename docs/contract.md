@@ -269,7 +269,7 @@ export function apply(ctx) {
 
 #### GET /git/health
 
-→ \`{ "ok": true, "plugin": "dsh-git", "version": "0.1.0", "git": "2.54.0.windows.1" }\`
+→ \`{ "ok": true, "plugin": "@wx-98/dsh-git", "version": "0.1.0", "git": "2.54.0.windows.1" }\`
 （用于安装自检：\`git --version\` 拿不到时 \`git: null\`，仍返回 ok:true。）
 
 ### 1.4 安全边界

@@ -1,5 +1,5 @@
 /**
- * Host half of the dsh-git bundle.
+ * Host half of the @wx-98/dsh-git bundle.
  *
  * Registers the "/git/*" HTTP routes consumed by the browser half (client.js).
  * Every route is guarded by the dsh connection fence
@@ -42,7 +42,7 @@ export const inject = ["webServer", "connection"];
 const PREFIX = "/git";
 
 /** Package name reported by GET /git/health. */
-const PLUGIN_NAME = "dsh-git";
+const PLUGIN_NAME = "@wx-98/dsh-git";
 
 /** Hard cap for JSON request bodies: 64 KiB (contract 1.2). */
 const MAX_BODY_BYTES = 64 * 1024;

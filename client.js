@@ -12,7 +12,7 @@
 // docs/contract.md; when a route fails the panel keeps rendering and shows an
 // inline error banner with a retry action.
 window.__ModuleLoader__.load({
-  id: "dsh-git",
+  id: "@wx-98/dsh-git",
   factory(require) {
     const React = require("react");
     const h = React.createElement;
@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     /** This implementation's identity in the tab system and the body/title slot key. */
-    const ID = "dsh-git";
+    const ID = "@wx-98/dsh-git";
     /** The right-sidebar tab kind this package owns. */
     const KIND = "git";
     /** Locale namespace used for every visible string. */
@@ -3512,7 +3512,7 @@ function computeLanes(commits, options = {}) {
     }
 
     // -------------------------------------------------------------------------
-    // Stylesheet (one <style data-dg-plugin="dsh-git">, removed on unload)
+    // Stylesheet (one <style data-dg-plugin> tag, removed on unload)
     // -------------------------------------------------------------------------
 
     const CSS_TEXT = [

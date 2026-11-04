@@ -151,7 +151,7 @@ function findBootEntry(html) {
   if (end < 0) throw new Error("__DSH_BOOT__ JSON 不完整");
   const boot = JSON.parse(html.slice(cursor, end));
   const entries = Array.isArray(boot.entries) ? boot.entries : [];
-  const entry = entries.find((item) => item && item.id === "dsh-git");
+  const entry = entries.find((item) => item && item.id === "@wx-98/dsh-git");
   return { boot, entry, entries };
 }
 
@@ -236,7 +236,7 @@ check("客户端入口图包含 dsh-git", async () => {
   const { boot, entry, entries } = findBootEntry(state.html);
   state.boot = boot;
   assert(entries.length > 20, "入口图条目过少，疑似未正确组合：" + entries.length);
-  assert(entry !== undefined, "入口图里没有 id 为 dsh-git 的条目");
+  assert(entry !== undefined, "入口图里没有 id 为 @wx-98/dsh-git 的条目");
   assert(typeof entry.url === "string" && entry.url.length > 0, "dsh-git 条目缺少 url");
   state.entry = entry;
 });
@@ -247,7 +247,7 @@ check("插件浏览器半边被 /plugins 正确服务", async () => {
   assert(response.status === 200, "bundle 状态码应为 200，实际 " + response.status + "（url " + url + "）");
   const source = await response.text();
   assert(source.includes("__ModuleLoader__.load"), "bundle 里没有 __ModuleLoader__.load");
-  assert(source.includes('"dsh-git"'), "bundle 里没有 dsh-git 标识");
+  assert(source.includes('"@wx-98/dsh-git"'), "bundle 里没有包标识");
   state.bundleSource = source;
 });
 
@@ -255,7 +255,7 @@ check("GET /git/health", async () => {
   const { status, body } = await state.session.json("/git/health");
   assert(status === 200, "状态码应为 200，实际 " + status);
   assert(body && body.ok === true, "ok 应为 true");
-  assert(body.plugin === "dsh-git", "plugin 字段应为 dsh-git，实际 " + JSON.stringify(body.plugin));
+  assert(body.plugin === "@wx-98/dsh-git", "plugin 字段应为 @wx-98/dsh-git，实际 " + JSON.stringify(body.plugin));
   assert(typeof body.version === "string" && body.version.length > 0, "缺少 version");
   assert("git" in body, "缺少 git 字段");
 });

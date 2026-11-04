@@ -30,22 +30,29 @@
 
 ## 安装
 
+> 插件类型：**Cordis 插件 bundle**（Host 半边 + 浏览器半边，不是皮肤 / TUI / 桌面客户端）。
+> 一句话职责：在 DSH 右侧栏与会话头部提供类 VSCode/IDEA 的 Git 源码管理。
+
 前置：DSH Web/Desktop **0.2.1-rc.5**（依赖右侧栏标签扩展点 `sidebarRightTabs` + `sidebar.right.pane.tab` 槽位）。
 
-### 本地目录安装（推荐用于开发）
-
-GUI：**Plugins → Add plugin → 本地绝对路径**，填本仓库目录（例如 `D:\code\DSH\Plugin\git`），
-安装后在 Plugins 页启用 `dsh-git` 这个 bundle row，刷新页面。
-
-CLI（`dsh` 在 PATH 中时，适用于非 desktop 的 profile）：
+### 从 npm 安装（推荐）
 
 ```bash
-dsh plugin --profile web add D:/code/DSH/Plugin/git
+dsh plugin --profile desktop add @wx-98/dsh-git
 ```
 
-> `desktop` profile 由 Electron 应用独占管理，CLI 会拒绝；此时用 GUI 安装，或运行本仓库的一键脚本：
+### 从 GitHub 安装
 
-### 一键脚本（desktop profile）
+```bash
+dsh plugin --profile desktop add github:wx-98/DSH-GIT
+```
+
+### 本地目录安装（开发用）
+
+GUI：**Plugins → Add plugin → 本地绝对路径**，填本仓库目录（例如 `D:\code\DSH\Plugin\git`），
+安装后在 Plugins 页启用 `@wx-98/dsh-git` 这个 bundle row，刷新页面。
+
+> `desktop` profile 由 Electron 应用独占管理，CLI 会拒绝操作；此时用 GUI 安装，或运行本仓库的一键脚本：
 
 ```powershell
 pwsh -File .\tools\install-desktop.ps1              # 安装（重启 DSH 后生效）
@@ -54,7 +61,6 @@ pwsh -File .\tools\install-desktop.ps1 -RemoveLivePatch
 ```
 
 本地目录以 link 方式安装，改动 `client.js` 刷新页面即生效；Host 半边改动需重启应用（或用 `-LivePatch` 热加载）后生效。
-
 ## 使用
 
 1. 打开任意会话（Git 面板以**会话 cwd** 为仓库根）；

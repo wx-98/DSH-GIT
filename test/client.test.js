@@ -363,9 +363,29 @@ const STATUS_FIXTURE = {
 // 1. Bundle identity and shape
 // ---------------------------------------------------------------------------
 
-test("client.js registers itself with the module loader as dsh-git", () => {
-  assert.equal(CLIENT.registration.id, "dsh-git");
+test("client.js registers itself with the module loader under the package name", () => {
+  assert.equal(CLIENT.registration.id, "@wx-98/dsh-git");
   assert.equal(typeof CLIENT.registration.factory, "function");
+});
+
+test("the package identity is the single source of truth for the loader row and the bundle id", () => {
+  const manifest = JSON.parse(readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"));
+  const name = manifest.name;
+  assert.equal(typeof name, "string");
+  assert.ok(name.length > 0, "package.json must declare a name");
+
+  const patch = readFileSync(path.join(PROJECT_ROOT, "cordis.patch.yml"), "utf8");
+  const rowName = /name:\s*'([^']+)'/.exec(patch);
+  assert.ok(rowName !== null, "cordis.patch.yml must carry the loader row name");
+  assert.equal(rowName[1], name, "the loader row name must equal package.json#name");
+
+  const bundleId = /^\s*id:\s*"([^"]+)",/m.exec(SOURCE);
+  assert.ok(bundleId !== null, "client.js must register a bundle id");
+  assert.equal(bundleId[1], name, "the client bundle id must equal package.json#name");
+
+  const idConstant = /const ID = "([^"]+)";/.exec(SOURCE);
+  assert.ok(idConstant !== null, "client.js must declare its ID constant");
+  assert.equal(idConstant[1], name, "the client ID constant must equal package.json#name");
 });
 
 test("client.js stays a classic, react-only bundle", () => {
@@ -430,10 +450,10 @@ test("apply registers the git dictionaries with identical zh/en key sets", () =>
   }
 });
 
-test("apply registers exactly one right-sidebar tab type for dsh-git", () => {
+test("apply registers exactly one right-sidebar tab type for the package", () => {
   assert.equal(STATE.tabRegistrations.length, 1);
   const spec = STATE.tabRegistrations[0];
-  assert.equal(spec.id, "dsh-git");
+  assert.equal(spec.id, "@wx-98/dsh-git");
   assert.equal(spec.kind, "git");
   assert.equal(spec.keepMounted, true);
   assert.equal(typeof spec.title, "function");
@@ -457,7 +477,7 @@ test("apply registers the panel body, the title chip and the header branch chip"
   assert.ok(title, "the title chip slot must be registered");
   assert.ok(chip, "the session-header branch chip slot must be registered");
   for (const registration of [body, title]) {
-    assert.equal(registration.spec.key, "dsh-git");
+    assert.equal(registration.spec.key, "@wx-98/dsh-git");
     assert.equal(registration.spec.locale, "git");
     assert.equal(typeof registration.component, "function");
   }
@@ -816,8 +836,8 @@ test("styles are injected once and removed again on unload", () => {
   styleClient.moduleExports.apply(applied.context);
   assert.equal(fakeDocument.head.children.length, 1, "exactly one style tag is injected");
   const tag = fakeDocument.head.children[0];
-  assert.equal(tag.getAttribute("data-plugin"), "dsh-git");
-  assert.equal(tag.getAttribute("data-dg-style"), "dsh-git/styles");
+  assert.equal(tag.getAttribute("data-plugin"), "@wx-98/dsh-git");
+  assert.equal(tag.getAttribute("data-dg-style"), "@wx-98/dsh-git/styles");
   const css = tag.textContent;
   assert.ok(css.length > 2000, "the stylesheet should be substantial, got " + String(css.length) + " chars");
   assert.ok(css.includes(".dg-root{"), "panel root styles are present");
@@ -831,7 +851,7 @@ test("styles are injected once and removed again on unload", () => {
   assert.equal(fakeDocument.head.children.length, 1, "repeated applies reuse the style tag");
 
   const panel = fakeDocument.createElement("div");
-  panel.setAttribute("data-dg-plugin", "dsh-git");
+  panel.setAttribute("data-dg-plugin", "@wx-98/dsh-git");
   fakeDocument.body.appendChild(panel);
   for (const dispose of applied.state.disposers) dispose();
   assert.equal(fakeDocument.head.children.length, 1, "unload keeps styles while a panel is mounted");
