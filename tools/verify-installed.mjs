@@ -159,12 +159,18 @@ function findBootEntry(html) {
 // 临时 git 仓库
 // ---------------------------------------------------------------------------
 
-/** @param {string} cwd @param {string[]} args */
-async function git(cwd, args) {
+/** @param {string} cwd @param {string[]} args @param {Record<string,string>} [env] */
+async function git(cwd, args, env) {
   const { stdout } = await run(
     "git",
     ["-c", "core.quotepath=false", "-c", "user.name=DSH Verify", "-c", "user.email=verify@dsh.local", "-c", "gc.auto=0", "-c", "commit.gpgsign=false", ...args],
-    { cwd, timeout: 30000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+    {
+      cwd,
+      timeout: 30000,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+      ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+    },
   );
   return stdout;
 }
@@ -173,6 +179,19 @@ async function git(cwd, args) {
 async function makeRepo() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dsh-git-verify-"));
   await git(dir, ["init", "-b", "main"]);
+  // Two commits pinned to known dates so the date-range filter is deterministic.
+  await fs.writeFile(path.join(dir, "june.txt"), "june\n", "utf8");
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "-m", "chore: 六月提交"], {
+    GIT_AUTHOR_DATE: "2026-06-15T12:00:00",
+    GIT_COMMITTER_DATE: "2026-06-15T12:00:00",
+  });
+  await fs.writeFile(path.join(dir, "july.txt"), "july\n", "utf8");
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "-m", "chore: 七月提交"], {
+    GIT_AUTHOR_DATE: "2026-07-01T23:59:59",
+    GIT_COMMITTER_DATE: "2026-07-01T23:59:59",
+  });
   await fs.writeFile(path.join(dir, "a.ts"), "export const a = 1;\n", "utf8");
   await fs.writeFile(path.join(dir, "旧文件 名.md"), "# 旧\n", "utf8");
   await fs.writeFile(path.join(dir, "keep.txt"), "keep\n", "utf8");
@@ -190,6 +209,12 @@ async function makeRepo() {
   await git(dir, ["add", "keep.txt"]);
   // 重命名（未暂存）
   await git(dir, ["mv", "旧文件 名.md", "重命名 后.md"]);
+  // A real upstream: bare remote beside the work tree, then push -u.
+  const remoteDir = dir + "-remote.git";
+  await fs.mkdir(remoteDir, { recursive: true });
+  await git(remoteDir, ["init", "--bare", "-b", "main"]);
+  await git(dir, ["remote", "add", "origin", remoteDir]);
+  await git(dir, ["push", "-u", "origin", "main"]);
   return dir;
 }
 
@@ -507,6 +532,38 @@ check("GET /git/log 支持 grep / author / path 过滤", async () => {
   assert(byPath.status === 200, "path 过滤失败");
   const escape = await state.session.json("/git/log?root=" + encodeURIComponent(state.repo) + "&path=" + encodeURIComponent("../outside.txt"));
   assert(escape.status === 400, "越界 path 过滤应 400，实际 " + escape.status);
+});
+
+check("GET /git/status 报告真实的上游分支", async () => {
+  const { status, body } = await state.session.json("/git/status?root=" + encodeURIComponent(state.repo));
+  assert(status === 200 && body.ok === true && body.isRepo === true, "status 失败");
+  assert(body.branch.detached === false, "应当处于普通分支上");
+  assert(
+    typeof body.branch.upstream === "string" && body.branch.upstream.length > 0,
+    "配置了 origin/main 上游时 status.branch.upstream 不得为空，实际 " + JSON.stringify(body.branch.upstream),
+  );
+  assert(body.branch.upstream === "origin/main", "上游应为 origin/main，实际 " + body.branch.upstream);
+  const branches = await state.session.json("/git/branches?root=" + encodeURIComponent(state.repo));
+  const current = branches.body.local.find((entry) => entry.isCurrent === true);
+  assert(current !== undefined, "分支列表缺少当前分支");
+  assert(current.upstream === "origin/main", "分支列表的当前分支上游错误：" + JSON.stringify(current.upstream));
+});
+
+check("GET /git/log 支持 since/until 日期范围", async () => {
+  const base = "/git/log?root=" + encodeURIComponent(state.repo) + "&limit=50";
+  const june = await state.session.json(base + "&since=2026-06-01T00:00:00&until=2026-06-30T23:59:59");
+  assert(june.status === 200 && june.body.ok === true, "六月范围查询失败");
+  assert(june.body.commits.length === 1, "六月范围应只有 1 条，实际 " + june.body.commits.length);
+  assert(june.body.commits[0].subject.includes("六月"), "六月范围返回了错误的提交：" + june.body.commits[0].subject);
+  const july = await state.session.json(base + "&since=2026-07-01T00:00:00&until=2026-07-01T23:59:59");
+  assert(july.status === 200, "七月范围查询失败");
+  assert(july.body.commits.length === 1 && july.body.commits[0].subject.includes("七月"), "七月边界当天的提交应被包含");
+  const future = await state.session.json(base + "&since=2099-01-01T00:00:00");
+  assert(future.status === 200 && future.body.commits.length === 0 && future.body.hasMore === false, "未来起点应返回空页");
+  const invalid = await state.session.json(base + "&since=not-a-date");
+  assert(invalid.status === 400, "非法 since 应返回 400，实际 " + invalid.status);
+  const invalidUntil = await state.session.json(base + "&until=2026-13-99");
+  assert(invalidUntil.status === 400, "非法 until 应返回 400，实际 " + invalidUntil.status);
 });
 
 check("未知 /git 路由返回 404 JSON", async () => {

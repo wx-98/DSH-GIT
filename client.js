@@ -207,6 +207,132 @@ window.__ModuleLoader__.load({
       return "local";
     }
 
+    /** One ref decoration: a coloured pill whose dot encodes the ref kind. */
+    function refTagNode(tag, key) {
+      const tone = refTone(tag);
+      return h("span", {
+        className: "dg-ref-tag dg-ref-" + tone,
+        key: key,
+        title: String(tag),
+      },
+        h("span", { className: "dg-ref-dot dg-ref-dot-" + tone, "aria-hidden": "true" }),
+        h("span", { className: "dg-ref-label" }, String(tag)));
+    }
+
+    // -------------------------------------------------------------------------
+    // History layout, dates and filters (design D1, D3, D5)
+    // -------------------------------------------------------------------------
+
+    /** Panel width assumed until the ResizeObserver reports the real one. */
+    const HISTORY_DEFAULT_WIDTH = 720;
+    /** Below this the branch tree folds into a toggle (design D1). */
+    const HISTORY_TREE_BREAKPOINT = 560;
+    /** Below this the author column is dropped (design D3). */
+    const HISTORY_AUTHOR_BREAKPOINT = 640;
+    /** Below this the short-hash column is dropped too (design D3). */
+    const HISTORY_HASH_BREAKPOINT = 520;
+
+    /** Absolute commit timestamp as `yyyy-MM-dd HH:mm` in the local time zone. */
+    function formatCommitDate(seconds) {
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return "";
+      const date = new Date(seconds * 1000);
+      const pad = function (value) {
+        return value < 10 ? "0" + String(value) : String(value);
+      };
+      try {
+        return String(date.getFullYear()) + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+          + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+      } catch (error) {
+        return "";
+      }
+    }
+
+    /** One `<input type="date">` value, or "" when it is not `YYYY-MM-DD`. */
+    function normalizeDateValue(value) {
+      const raw = typeof value === "string" ? value.trim() : "";
+      return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+    }
+
+    /** Until bound: the whole selected day, so "to 2026-10-31" includes it (D5). */
+    function normalizeUntilValue(value) {
+      const date = normalizeDateValue(value);
+      return date === "" ? "" : date + "T23:59:59";
+    }
+
+    /** Which history pieces a panel width can afford. */
+    function resolveHistoryLayout(value) {
+      const width = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : HISTORY_DEFAULT_WIDTH;
+      return {
+        width: width,
+        treeCollapsed: width < HISTORY_TREE_BREAKPOINT,
+        showAuthor: width >= HISTORY_AUTHOR_BREAKPOINT,
+        showHash: width >= HISTORY_HASH_BREAKPOINT,
+      };
+    }
+
+    /** Trimmed log query parameters; the until date is normalised to end of day. */
+    function logQueryParams(filters) {
+      const source = filters !== null && filters !== undefined && typeof filters === "object" ? filters : {};
+      const pick = function (name) {
+        return isNonEmptyString(source[name]) ? source[name].trim() : "";
+      };
+      return {
+        grep: pick("grep"),
+        author: pick("author"),
+        path: pick("path"),
+        since: normalizeDateValue(pick("since")),
+        until: normalizeUntilValue(pick("until")),
+      };
+    }
+
+    /** Text / date / combined filter activity for empty states and the clear link. */
+    function summarizeHistoryFilters(filters) {
+      const params = logQueryParams(filters);
+      const text = params.grep !== "" || params.author !== "" || params.path !== "";
+      const date = params.since !== "" || params.until !== "";
+      return { params: params, text: text, date: date, active: text === true || date === true };
+    }
+
+    /** Index of the HEAD commit inside one page of commits; -1 when absent. */
+    function indexOfHeadCommit(commits, headSha) {
+      if (!isNonEmptyString(headSha) || !Array.isArray(commits)) return -1;
+      for (let index = 0; index < commits.length; index += 1) {
+        const commit = commits[index];
+        if (commit !== null && typeof commit === "object" && commit.sha === headSha) return index;
+      }
+      return -1;
+    }
+
+    /**
+     * What the current branch's upstream slot must say.
+     *
+     * A detached HEAD has no upstream by definition, so it must not be reported
+     * as "no upstream"; and when the status payload has not learned the upstream
+     * yet (first poll, or a host that omits the field) the branch roster is the
+     * fallback authority instead of a hard default.
+     *
+     * @param {unknown} branch status.branch
+     * @param {unknown} branches GET /git/branches payload (may be null)
+     * @param {string} currentName current branch name
+     * @returns {{ kind: "detached"|"upstream"|"none", name: string }}
+     */
+    function resolveUpstream(branch, branches, currentName) {
+      if (branch !== null && typeof branch === "object" && branch.detached === true) {
+        return { kind: "detached", name: "" };
+      }
+      if (branch !== null && typeof branch === "object" && isNonEmptyString(branch.upstream)) {
+        return { kind: "upstream", name: branch.upstream };
+      }
+      const locals = branches !== null && typeof branches === "object" && Array.isArray(branches.local) ? branches.local : [];
+      for (const entry of locals) {
+        if (entry === null || typeof entry !== "object") continue;
+        const isCurrent = entry.isCurrent === true || (isNonEmptyString(currentName) && entry.name === currentName);
+        if (!isCurrent) continue;
+        if (isNonEmptyString(entry.upstream)) return { kind: "upstream", name: entry.upstream };
+      }
+      return { kind: "none", name: "" };
+    }
+
     /** Locale key for one diff mode. */
     function modeKey(mode) {
       if (mode === "staged") return "diff.mode.staged";
@@ -530,6 +656,8 @@ window.__ModuleLoader__.load({
           grep: opts.grep,
           author: opts.author,
           path: opts.path,
+          since: opts.since,
+          until: opts.until,
         });
       },
       commitDetail: function (root, sha) {
@@ -680,6 +808,20 @@ window.__ModuleLoader__.load({
       },
         h("path", { d: "M13.2 8a5.2 5.2 0 1 1-1.56-3.7", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" }),
         h("path", { d: "M13.3 2.7v3.4H9.9", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round", strokeLinejoin: "round" }));
+    }
+
+    function JumpHeadIcon() {
+      return h("svg", {
+        width: 14,
+        height: 14,
+        viewBox: "0 0 16 16",
+        fill: "none",
+        focusable: "false",
+        "aria-hidden": "true",
+      },
+        h("path", { d: "M8 2.2v7.2", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" }),
+        h("path", { d: "M4.6 6.2 8 9.6l3.4-3.4", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round", strokeLinejoin: "round" }),
+        h("path", { d: "M3.4 13.2h9.2", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" }));
     }
 
     function BackIcon() {
@@ -1497,8 +1639,8 @@ window.__ModuleLoader__.load({
         : relativeTime === "" ? absoluteTime : absoluteTime + "  (" + relativeTime + ")";
       rows.push(detailRow(t("history.detail.time"), timeText, "time"));
       if (refs.length > 0) {
-        rows.push(detailRow(t("history.detail.refs"), h("span", null, refs.map(function (tag, index) {
-          return h("span", { className: "dg-ref-tag dg-ref-" + refTone(tag), key: "ref-" + String(index) }, String(tag));
+        rows.push(detailRow(t("history.detail.refs"), h("span", { className: "dg-ref-list" }, refs.map(function (tag, index) {
+          return refTagNode(tag, "ref-" + String(index));
         })), "refs"));
       }
       if (parents.length > 0) {
@@ -1558,7 +1700,16 @@ window.__ModuleLoader__.load({
         h("span", { className: "dg-detail-value" }, value));
     }
 
-    function HistoryPane(props) {
+    /**
+     * History tab: branch tree + column commit list (design D1-D4, D7).
+     *
+     * The tree only changes the log range (GET /git/log?ref=); checking a branch
+     * out stays an explicit toolbar action. A ResizeObserver on the panel root
+     * folds the tree and drops columns on narrow widths; tests pass an explicit
+     * `width` prop instead of driving a live observer.
+     */
+    function HistoryPane(rawProps) {
+      const props = rawProps || {};
       const t = typeof props.t === "function" ? props.t : defaultTranslate;
       const branchesRef = React.useState(null);
       const branches = branchesRef[0];
@@ -1569,7 +1720,9 @@ window.__ModuleLoader__.load({
       const refNameRef = React.useState("HEAD");
       const refName = refNameRef[0];
       const setRefName = refNameRef[1];
-      const filterRef = React.useState(function () { return { grep: "", author: "", path: "" }; });
+      const filterRef = React.useState(function () {
+        return { grep: "", author: "", path: "", since: "", until: "" };
+      });
       const filters = filterRef[0];
       const setFilters = filterRef[1];
       const commitsRef = React.useState([]);
@@ -1609,14 +1762,33 @@ window.__ModuleLoader__.load({
       const tokenRef = React.useState(0);
       const token = tokenRef[0];
       const setToken = tokenRef[1];
+      const treeOpenRef = React.useState(false);
+      const treeOpen = treeOpenRef[0];
+      const setTreeOpen = treeOpenRef[1];
+      const measuredWidthRef = React.useState(HISTORY_DEFAULT_WIDTH);
+      const measuredWidth = measuredWidthRef[0];
+      const setMeasuredWidth = measuredWidthRef[1];
+      const activeRef = React.useState(0);
+      const activeIndex = activeRef[0];
+      const setActiveIndex = activeRef[1];
 
       const seqRef = React.useRef(0);
       const appendingRef = React.useRef(false);
       const refreshTokenRef = React.useRef(props.refreshToken);
       const commitsLenRef = React.useRef(0);
+      const rootNodeRef = React.useRef(null);
+      const rowNodesRef = React.useRef({});
       commitsLenRef.current = commits.length;
 
-      const filterActive = filters.grep !== "" || filters.author !== "" || filters.path !== "";
+      const width = typeof props.width === "number" && Number.isFinite(props.width) && props.width > 0
+        ? props.width
+        : measuredWidth;
+      const layout = resolveHistoryLayout(width);
+      const treeCollapsed = layout.treeCollapsed === true;
+      const treeVisible = treeCollapsed !== true || treeOpen === true;
+      const logFilters = summarizeHistoryFilters(filters);
+      const filterActive = logFilters.active === true;
+      const rangeLabel = refName === "HEAD" ? t("history.head") : refName;
 
       React.useEffect(function () {
         let cancelled = false;
@@ -1633,6 +1805,36 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [props.cwd, token]);
+
+      // Layout signal for the two-column split (design D1/D3). The browser drives
+      // it with a ResizeObserver; the hook harness has neither DOM nodes nor a
+      // ResizeObserver, so the default width stands and the `width` prop overrides.
+      React.useEffect(function () {
+        if (typeof props.width === "number" && Number.isFinite(props.width)) return undefined;
+        const node = rootNodeRef.current;
+        if (node === null || node === undefined) return undefined;
+        if (typeof ResizeObserver === "function") {
+          const observer = new ResizeObserver(function (entries) {
+            const entry = Array.isArray(entries) && entries.length > 0 ? entries[0] : null;
+            const rect = entry !== null && entry !== undefined && entry.contentRect !== null && typeof entry.contentRect === "object"
+              ? entry.contentRect
+              : null;
+            if (rect === null || typeof rect.width !== "number" || rect.width <= 0) return;
+            setMeasuredWidth(rect.width);
+          });
+          observer.observe(node);
+          return function () {
+            observer.disconnect();
+          };
+        }
+        if (typeof node.getBoundingClientRect === "function") {
+          const rect = node.getBoundingClientRect();
+          if (rect !== null && typeof rect === "object" && typeof rect.width === "number" && rect.width > 0) {
+            setMeasuredWidth(rect.width);
+          }
+        }
+        return undefined;
+      }, []);
 
       React.useEffect(function () {
         if (refreshTokenRef.current === props.refreshToken) return undefined;
@@ -1664,13 +1866,16 @@ window.__ModuleLoader__.load({
           setLoading(true);
         }
         const skip = append === true ? commitsLenRef.current : 0;
+        const query = logQueryParams(filters);
         api.log(props.cwd, {
           limit: LOG_LIMIT,
           skip: skip,
           ref: refName,
-          grep: filters.grep.trim(),
-          author: filters.author.trim(),
-          path: filters.path.trim(),
+          grep: query.grep,
+          author: query.author,
+          path: query.path,
+          since: query.since,
+          until: query.until,
         }).then(function (payload) {
           if (seqRef.current !== seq) return;
           const list = payload !== null && typeof payload === "object" && Array.isArray(payload.commits) ? payload.commits : [];
@@ -1690,11 +1895,20 @@ window.__ModuleLoader__.load({
           setLoadingMore(false);
           appendingRef.current = false;
         });
-      }, [props.cwd, refName, filters.grep, filters.author, filters.path]);
+      }, [props.cwd, refName, filters.grep, filters.author, filters.path, filters.since, filters.until]);
 
       React.useEffect(function () {
         loadPage(false);
       }, [loadPage, token]);
+
+      // Keep the keyboard selection inside the list as filters and pages change.
+      React.useEffect(function () {
+        if (commits.length === 0) {
+          if (activeIndex !== 0) setActiveIndex(0);
+          return;
+        }
+        if (activeIndex > commits.length - 1) setActiveIndex(commits.length - 1);
+      }, [commits.length, activeIndex]);
 
       useEscape(detail !== null, function () {
         setDetail(null);
@@ -1704,14 +1918,20 @@ window.__ModuleLoader__.load({
         const next = typeof value === "string" ? value : "";
         setFilters(function (previous) {
           if (previous[name] === next) return previous;
-          const updated = { grep: previous.grep, author: previous.author, path: previous.path };
+          const updated = {
+            grep: previous.grep,
+            author: previous.author,
+            path: previous.path,
+            since: previous.since,
+            until: previous.until,
+          };
           updated[name] = next;
           return updated;
         });
       }
 
       function clearFilters() {
-        setFilters({ grep: "", author: "", path: "" });
+        setFilters({ grep: "", author: "", path: "", since: "", until: "" });
       }
 
       function checkoutRange() {
@@ -1741,6 +1961,49 @@ window.__ModuleLoader__.load({
         if (remaining <= SCROLL_SLACK) loadPage(true);
       }
 
+      // The row DOM node is only reachable through the ref callback; the hook
+      // harness never mounts DOM, so every scroll is guarded (design D7).
+      function scrollRowIntoView(index) {
+        const nodes = rowNodesRef.current;
+        const node = nodes !== null && typeof nodes === "object" ? nodes[index] : null;
+        if (node === null || node === undefined) return;
+        if (typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest" });
+      }
+
+      function moveActive(next) {
+        const count = commits.length;
+        if (count === 0) return;
+        const clamped = next < 0 ? 0 : next > count - 1 ? count - 1 : next;
+        setActiveIndex(clamped);
+        scrollRowIntoView(clamped);
+      }
+
+      function jumpToHead() {
+        const index = indexOfHeadCommit(commits, headSha);
+        if (index < 0) return;
+        setActiveIndex(index);
+        scrollRowIntoView(index);
+      }
+
+      function onListKeyDown(event) {
+        if (event === null || event === undefined || typeof event.key !== "string") return;
+        const count = commits.length;
+        if (count === 0) return;
+        if (event.key === "Enter") {
+          if (typeof event.preventDefault === "function") event.preventDefault();
+          const commit = commits[activeIndex];
+          const sha = commit !== null && typeof commit === "object" && isNonEmptyString(commit.sha) ? commit.sha : "";
+          if (sha !== "") setDetail({ sha: sha });
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (event.key === "ArrowDown") moveActive(activeIndex + 1);
+        else if (event.key === "ArrowUp") moveActive(activeIndex - 1);
+        else if (event.key === "Home") moveActive(0);
+        else moveActive(count - 1);
+      }
+
       if (detail !== null) {
         return h("div", { className: "dg-history" },
           h(CommitDetail, {
@@ -1767,6 +2030,79 @@ window.__ModuleLoader__.load({
         if (branch === null || typeof branch !== "object" || !isNonEmptyString(branch.name)) continue;
         options.push(h("option", { key: "remote-" + branch.name, value: branch.name }, branch.name));
       }
+
+      const currentName = branches !== null && typeof branches === "object" && isNonEmptyString(branches.current) ? branches.current : "";
+      const detached = branches !== null && typeof branches === "object" && branches.detached === true;
+
+      function treeItem(value, label, options_) {
+        const opts = options_ === null || options_ === undefined ? {} : options_;
+        const selected = refName === value;
+        const classes = ["dg-history-tree-item"];
+        if (selected === true) classes.push("dg-history-tree-item-current");
+        const aria = isNonEmptyString(opts.aria) ? opts.aria : t("history.tree.entry", { branch: label });
+        return h("button", {
+          type: "button",
+          key: opts.key,
+          className: classes.join(" "),
+          title: aria,
+          "aria-label": aria,
+          "aria-current": selected === true ? "true" : undefined,
+          onClick: function () {
+            setRefName(value);
+            if (treeCollapsed === true) setTreeOpen(false);
+          },
+        },
+          h("span", { className: "dg-history-tree-dot dg-history-tree-dot-" + (opts.tone === undefined ? "local" : opts.tone), "aria-hidden": "true" }),
+          h("span", { className: "dg-history-tree-name" }, label),
+          opts.current === true ? h("span", { className: "dg-history-tree-check", "aria-hidden": "true" }, "\u2713") : null);
+      }
+
+      function treeStatus(text, key) {
+        return h("div", { className: "dg-history-tree-status", key: key }, text);
+      }
+
+      const treeNodes = [treeItem("HEAD", t("history.tree.all"), { key: "range-all", tone: "head", aria: t("history.tree.all") })];
+      if (branches === null || typeof branches !== "object") {
+        treeNodes.push(treeStatus(branchError !== null ? t("history.tree.error") : t("history.tree.loading"), "tree-status"));
+      } else {
+        const headItems = [];
+        if (detached === true) {
+          headItems.push(treeItem("HEAD", t("summary.detachedHead"), { key: "head-detached", tone: "head", current: true }));
+        } else if (currentName !== "") {
+          headItems.push(treeItem(currentName, currentName, { key: "head-branch", tone: "head", current: true }));
+        }
+        treeNodes.push(h("div", { className: "dg-history-tree-group", key: "group-head" },
+          h("div", { className: "dg-history-tree-title" }, t("history.tree.head")),
+          headItems.length === 0 ? treeStatus(t("history.tree.empty"), "head-empty") : headItems));
+        const localItems = [];
+        for (let index = 0; index < local.length; index += 1) {
+          const branch = local[index];
+          if (branch === null || typeof branch !== "object" || !isNonEmptyString(branch.name)) continue;
+          const isCurrent = branch.isCurrent === true || branch.name === currentName;
+          localItems.push(treeItem(branch.name, branch.name, {
+            key: "local-" + branch.name,
+            tone: "local",
+            current: isCurrent,
+          }));
+        }
+        treeNodes.push(h("div", { className: "dg-history-tree-group", key: "group-local" },
+          h("div", { className: "dg-history-tree-title" }, t("history.tree.local")),
+          localItems.length === 0 ? treeStatus(t("history.tree.empty"), "local-empty") : localItems));
+        const remoteItems = [];
+        for (let index = 0; index < remote.length; index += 1) {
+          const branch = remote[index];
+          if (branch === null || typeof branch !== "object" || !isNonEmptyString(branch.name)) continue;
+          remoteItems.push(treeItem(branch.name, branch.name, { key: "remote-" + branch.name, tone: "remote" }));
+        }
+        treeNodes.push(h("div", { className: "dg-history-tree-group", key: "group-remote" },
+          h("div", { className: "dg-history-tree-title" }, t("history.tree.remote")),
+          remoteItems.length === 0 ? treeStatus(t("history.tree.empty"), "remote-empty") : remoteItems));
+      }
+
+      const tree = h("aside", {
+        className: "dg-history-tree" + (treeCollapsed === true ? " dg-history-tree-pop" : ""),
+        "aria-label": t("history.tree.title"),
+      }, treeNodes);
 
       const header = h("div", { className: "dg-history-head" },
         h("select", {
@@ -1798,7 +2134,27 @@ window.__ModuleLoader__.load({
           onClick: function () {
             setToken(token + 1);
           },
-        }, h(RefreshIcon)));
+        }, h(RefreshIcon)),
+        h("button", {
+          type: "button",
+          className: "dg-icon-btn dg-history-jump",
+          title: t("history.jumpToHead"),
+          "aria-label": t("history.jumpToHead"),
+          disabled: commits.length === 0,
+          onClick: jumpToHead,
+        }, h(JumpHeadIcon)),
+        treeCollapsed === true
+          ? h("button", {
+            type: "button",
+            className: "dg-btn dg-history-tree-toggle",
+            "aria-label": t("history.tree.toggle"),
+            "aria-expanded": treeOpen === true ? "true" : "false",
+            title: t("history.tree.toggle"),
+            onClick: function () {
+              setTreeOpen(treeOpen !== true);
+            },
+          }, t("history.tree.title"))
+          : null);
 
       const filterBar = h("div", { className: "dg-history-filters" },
         h("input", {
@@ -1834,6 +2190,26 @@ window.__ModuleLoader__.load({
             updateFilter("path", event.target.value);
           },
         }),
+        h("input", {
+          type: "date",
+          className: "dg-filter-input dg-filter-date",
+          value: filters.since,
+          title: t("history.filter.since"),
+          "aria-label": t("history.filter.since"),
+          onChange: function (event) {
+            updateFilter("since", event.target.value);
+          },
+        }),
+        h("input", {
+          type: "date",
+          className: "dg-filter-input dg-filter-date",
+          value: filters.until,
+          title: t("history.filter.until"),
+          "aria-label": t("history.filter.until"),
+          onChange: function (event) {
+            updateFilter("until", event.target.value);
+          },
+        }),
         h("button", {
           type: "button",
           className: "dg-link-btn dg-filter-clear",
@@ -1867,74 +2243,117 @@ window.__ModuleLoader__.load({
       }
 
       const commitRows = commits.map(function (commit, index) {
-        const sha = commit !== null && typeof commit === "object" && isNonEmptyString(commit.sha) ? commit.sha : "";
-        const shortSha = commit !== null && typeof commit === "object" && isNonEmptyString(commit.shortSha) ? commit.shortSha : sha.slice(0, 7);
-        const subject = commit !== null && typeof commit === "object" && isNonEmptyString(commit.subject) ? commit.subject : t("history.subject.empty");
-        const refs = commit !== null && typeof commit === "object" && Array.isArray(commit.refs) ? commit.refs : [];
-        const author = commit !== null && typeof commit === "object" && isNonEmptyString(commit.author) ? commit.author : "";
-        const time = commit !== null && typeof commit === "object" ? commit.time : null;
+        const safe = commit !== null && typeof commit === "object" ? commit : {};
+        const sha = isNonEmptyString(safe.sha) ? safe.sha : "";
+        const shortSha = isNonEmptyString(safe.shortSha) ? safe.shortSha : sha.slice(0, 7);
+        const subject = isNonEmptyString(safe.subject) ? safe.subject : t("history.subject.empty");
+        const refs = Array.isArray(safe.refs) ? safe.refs : [];
+        const author = isNonEmptyString(safe.author) ? safe.author : "";
+        const time = safe.time;
+        const parents = Array.isArray(safe.parents) ? safe.parents : [];
+        const isMerge = parents.length > 1;
         const isHead = headSha !== "" && sha === headSha;
+        const row = graph.rows[index];
+        const rowWidth = row !== null && row !== undefined && typeof row.width === "number" && Number.isFinite(row.width) ? row.width : 1;
+        const graphWidth = Math.max(1, rowWidth) * GRAPH_LANE_WIDTH;
+        const rowClasses = ["dg-commit-row"];
+        if (isHead === true) {
+          rowClasses.push("dg-commit-row-head");
+          rowClasses.push("dg-commit-head");
+        }
+        if (isMerge === true) rowClasses.push("dg-commit-merge");
+        if (index === activeIndex) rowClasses.push("dg-commit-active");
+        const relative = time === null || time === undefined ? "" : formatRelativeTime(time, Date.now(), t);
+        const absolute = time === null || time === undefined ? "" : formatCommitDate(time);
         return h("div", {
-          className: "dg-commit-row" + (isHead ? " dg-commit-row-head" : ""),
+          className: rowClasses.join(" "),
           key: sha === "" ? "commit-" + String(index) : sha,
           role: "button",
-          tabIndex: 0,
+          tabIndex: -1,
+          style: { gridTemplateColumns: graphWidth + "px minmax(0,1fr) auto auto auto" },
           title: subject,
-          "aria-current": isHead ? "true" : undefined,
+          "aria-current": isHead === true ? "true" : undefined,
+          ref: function (node) {
+            rowNodesRef.current[index] = node;
+          },
           onClick: function () {
+            setActiveIndex(index);
             setDetail({ sha: sha });
           },
           onKeyDown: function (event) {
             if (event.key !== "Enter" && event.key !== " ") return;
             if (typeof event.preventDefault === "function") event.preventDefault();
+            setActiveIndex(index);
             setDetail({ sha: sha });
           },
         },
           h(CommitGraph, {
-            row: graph.rows[index],
+            row: row,
             rowKey: sha === "" ? index : sha,
-            headLabel: isHead ? t("graph.headLabel") : undefined,
+            headLabel: isHead === true ? t("graph.headLabel") : undefined,
           }),
-          h("div", { className: "dg-commit-body" },
-            h("div", { className: "dg-commit-line" },
-              h("span", { className: "dg-sha" }, shortSha),
-              h("span", { className: "dg-commit-subject" }, subject)),
-            h("div", { className: "dg-commit-meta" },
-              refs.map(function (tag, refIndex) {
-                return h("span", { className: "dg-ref-tag dg-ref-" + refTone(tag), key: "ref-" + String(refIndex) }, String(tag));
-              }),
-              author === "" ? null : h("span", { className: "dg-commit-author" }, author),
-              time === null ? null : h("span", { className: "dg-commit-time" }, formatRelativeTime(time, Date.now(), t)))));
+          h("div", { className: "dg-commit-main" },
+            h("span", { className: "dg-commit-subject" }, subject),
+            refs.length === 0 ? null : h("span", { className: "dg-commit-refs" }, refs.map(function (tag, refIndex) {
+              return refTagNode(tag, "ref-" + String(refIndex));
+            }))),
+          h("span", { className: "dg-commit-author" }, author),
+          h("span", { className: "dg-commit-date", title: relative }, absolute),
+          h("span", { className: "dg-sha dg-commit-sha" }, shortSha));
       });
 
       let listContent;
       if (loading === true) {
         listContent = h("div", { className: "dg-loading" }, t("history.loading"));
       } else if (commits.length === 0) {
-        listContent = filterActive === true
-          ? h("div", { className: "dg-empty" },
+        if (logFilters.date === true) {
+          listContent = h("div", { className: "dg-empty" },
+            h("div", { className: "dg-empty-title" }, t("history.empty.dateRange")),
+            h("button", {
+              type: "button",
+              className: "dg-link-btn",
+              onClick: clearFilters,
+            }, t("history.filter.clear")));
+        } else if (logFilters.text === true) {
+          listContent = h("div", { className: "dg-empty" },
             h("div", { className: "dg-empty-title" }, t("history.empty.filtered")),
             h("button", {
               type: "button",
               className: "dg-link-btn",
               onClick: clearFilters,
-            }, t("history.filter.clear")))
-          : h("div", { className: "dg-empty" },
+            }, t("history.filter.clear")));
+        } else {
+          listContent = h("div", { className: "dg-empty" },
             h("div", { className: "dg-empty-title" }, t("history.empty")));
+        }
       } else {
         listContent = commitRows;
       }
 
-      return h("div", { className: "dg-history" },
+      const listClasses = ["dg-commit-list"];
+      if (layout.showAuthor !== true) listClasses.push("dg-hide-author");
+      if (layout.showHash !== true) listClasses.push("dg-hide-hash");
+
+      return h("div", { className: "dg-history", ref: rootNodeRef },
         header,
         filterBar,
         banners,
-        h("div", { className: "dg-commit-list", onScroll: onScroll },
-          listContent,
-          loadingMore === true ? h("div", { className: "dg-load-more" }, t("history.loadMore")) : null,
-          loading !== true && loadingMore !== true && commits.length > 0 && hasMore !== true
-            ? h("div", { className: "dg-load-more" }, t("history.noMore"))
-            : null));
+        h("div", { className: "dg-history-body" },
+          treeVisible === true ? tree : null,
+          h("div", { className: "dg-history-main" },
+            h("div", { className: "dg-history-range", title: rangeLabel }, t("history.range", { ref: rangeLabel })),
+            h("div", {
+              className: listClasses.join(" "),
+              tabIndex: 0,
+              "aria-label": t("history.list.aria"),
+              onScroll: onScroll,
+              onKeyDown: onListKeyDown,
+            },
+              listContent,
+              loadingMore === true ? h("div", { className: "dg-load-more" }, t("history.loadMore")) : null,
+              loading !== true && loadingMore !== true && commits.length > 0 && hasMore !== true
+                ? h("div", { className: "dg-load-more" }, t("history.noMore"))
+                : null))));
     }
 
     // -------------------------------------------------------------------------
@@ -2498,7 +2917,7 @@ function computeLanes(commits, options = {}) {
       const detached = branch !== null && branch.detached === true;
       const ahead = branch === null ? 0 : toCount(branch.ahead);
       const behind = branch === null ? 0 : toCount(branch.behind);
-      const upstream = branch !== null && isNonEmptyString(branch.upstream) ? branch.upstream : "";
+      const upstreamInfo = resolveUpstream(branch, branches, currentName);
       const stagedCount = counts === null ? 0 : toCount(counts.staged);
       const unstagedCount = counts === null ? 0 : toCount(counts.unstaged);
       const untrackedCount = counts === null ? 0 : toCount(counts.untracked);
@@ -2650,9 +3069,11 @@ function computeLanes(commits, options = {}) {
           h("span", { className: "dg-pop-branch", title: label }, label),
           ahead > 0 ? h("span", { className: "dg-chip-ahead", title: t("chip.aheadTitle", { count: ahead }) }, "\u2191" + String(ahead)) : null,
           behind > 0 ? h("span", { className: "dg-chip-behind", title: t("chip.behindTitle", { count: behind }) }, "\u2193" + String(behind)) : null,
-          upstream === ""
-            ? h("span", { className: "dg-pop-upstream dg-muted" }, t("chip.noUpstream"))
-            : h("span", { className: "dg-pop-upstream dg-muted", title: upstream }, upstream)),
+          upstreamInfo.kind === "detached"
+            ? h("span", { className: "dg-pop-upstream dg-muted" }, t("summary.detachedHead"))
+            : upstreamInfo.kind === "upstream"
+              ? h("span", { className: "dg-pop-upstream dg-muted", title: upstreamInfo.name }, upstreamInfo.name)
+              : h("span", { className: "dg-pop-upstream dg-muted" }, t("chip.noUpstream"))),
         h("div", { className: "dg-pop-summary" }, t("branch.summary", {
           staged: stagedCount,
           unstaged: unstagedCount,
@@ -2949,13 +3370,40 @@ function computeLanes(commits, options = {}) {
         };
       }, [tab, tabVisible, root, loadStatus]);
 
+      // The upstream slot falls back to the branch roster, but only when the
+      // status payload cannot name the upstream itself; a detached HEAD never
+      // needs it, and a status that already carries an upstream never needs it.
+      const branchesState = React.useState(null);
+      const branches = branchesState[0];
+      const setBranches = branchesState[1];
       const repo = status !== null && typeof status === "object" && status.isRepo === true;
       const branch = repo && status.branch !== null && typeof status.branch === "object" ? status.branch : null;
+      const upstreamValue = branch !== null && isNonEmptyString(branch.upstream) ? branch.upstream : "";
+      const detachedValue = branch !== null && branch.detached === true;
+      const branchName = branch !== null && isNonEmptyString(branch.name) ? branch.name : "";
+
+      React.useEffect(function () {
+        if (root === null || branch === null || detachedValue === true || upstreamValue !== "") {
+          setBranches(null);
+          return undefined;
+        }
+        let cancelled = false;
+        api.branches(root).then(function (payload) {
+          if (!cancelled) setBranches(payload);
+        }, function () {
+          if (!cancelled) setBranches(null);
+        });
+        return function () {
+          cancelled = true;
+        };
+        // `branchName` changes when the first status arrives, which is exactly when
+        // the fallback must be reconsidered.
+      }, [root, token, branchName, detachedValue, upstreamValue]);
       const counts = repo && status.counts !== null && typeof status.counts === "object" ? status.counts : null;
       const changeCount = counts === null
         ? 0
         : toCount(counts.staged) + toCount(counts.unstaged) + toCount(counts.untracked);
-      const branchName = branch !== null && isNonEmptyString(branch.name) ? branch.name : "";
+      const upstreamInfo = resolveUpstream(branch, branches, branchName);
       const repoName = basename((status !== null && typeof status === "object" && isNonEmptyString(status.toplevel) ? status.toplevel : root) || "");
 
       React.useEffect(function () {
@@ -2982,12 +3430,12 @@ function computeLanes(commits, options = {}) {
         h("div", { className: "dg-summary-main" },
           h(GitGlyph, { size: 16, className: "dg-summary-icon" }),
           repo
-            ? h("span", { className: "dg-branch-name", title: branchName }, branchName === "" ? t("summary.detached") : branchName)
+            ? h("span", { className: "dg-branch-name", title: branchName }, detachedValue === true ? t("summary.detachedHead") : branchName)
             : h("span", { className: "dg-branch-name dg-muted" }, t("type.label")),
-          branch !== null && branch.detached === true && branchName !== "" ? h("span", { className: "dg-track" }, t("summary.detached")) : null,
           branch !== null && toCount(branch.ahead) > 0 ? h("span", { className: "dg-track" }, t("summary.ahead", { count: toCount(branch.ahead) })) : null,
           branch !== null && toCount(branch.behind) > 0 ? h("span", { className: "dg-track" }, t("summary.behind", { count: toCount(branch.behind) })) : null,
-          repo && branch !== null && !isNonEmptyString(branch.upstream) ? h("span", { className: "dg-track dg-muted" }, t("summary.noUpstream")) : null,
+          repo && upstreamInfo.kind === "upstream" ? h("span", { className: "dg-track dg-muted", title: upstreamInfo.name }, upstreamInfo.name) : null,
+          repo && upstreamInfo.kind === "none" ? h("span", { className: "dg-track dg-muted" }, t("summary.noUpstream")) : null,
           repoName === "" ? null : h("span", { className: "dg-summary-repo dg-muted", title: repoName }, repoName)),
         h("div", { className: "dg-summary-actions" },
           h("button", {
@@ -3181,11 +3629,32 @@ function computeLanes(commits, options = {}) {
       ".dg-diff-sign{flex:none;width:9px;text-align:center;color:var(--dsw-alias-label-secondary,#57606a);user-select:none}",
       ".dg-diff-text{flex:0 0 auto;padding-right:10px;white-space:pre;color:var(--dsw-alias-label-primary,#1f2328)}",
       ".dg-diff-notice{margin:6px 8px;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-fill-l2,rgba(175,184,193,.22));color:var(--dsw-alias-label-secondary,#57606a);font-size:11px;flex:none}",
-      ".dg-history{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}",
-      ".dg-history-head{display:flex;align-items:center;gap:6px;padding:6px 8px;flex:none;border-bottom:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
+      ".dg-history{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;position:relative}",
+      ".dg-history-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 8px;flex:none;border-bottom:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
+      ".dg-history-body{display:flex;flex:1 1 auto;min-height:0;min-width:0}",
+      ".dg-history-main{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0}",
+      ".dg-history-range{flex:none;padding:3px 8px 4px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#6e7781);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-history-tree{flex:0 0 176px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px 4px 8px;border-right:.5px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1))}",
+      ".dg-history-tree-pop{position:absolute;left:0;top:0;bottom:0;z-index:20;width:200px;max-width:78%;background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2))}",
+      ".dg-history-tree-group{display:flex;flex-direction:column;gap:1px;min-width:0}",
+      ".dg-history-tree-title{padding:4px 5px 1px;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#6e7781)}",
+      ".dg-history-tree-item{display:flex;align-items:center;gap:5px;min-width:0;padding:2px 5px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#57606a);font:inherit;font-size:12px;line-height:17px;text-align:left;cursor:pointer}",
+      ".dg-history-tree-item:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328)}",
+      ".dg-history-tree-item-current{background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));color:var(--dsw-alias-label-primary,#1f2328)}",
+      ".dg-history-tree-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#6e7781);opacity:.6}",
+      ".dg-history-tree-dot-head{background:#2da44e;opacity:1;box-shadow:0 0 0 2px rgba(46,160,67,.18)}",
+      ".dg-history-tree-dot-remote{background:#0969da;opacity:.85}",
+      "body[data-ds-dark-theme] .dg-history-tree-dot-remote{background:#79c0ff}",
+      ".dg-history-tree-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-history-tree-check{flex:none;color:#1a7f37;font-size:11px;line-height:14px}",
+      "body[data-ds-dark-theme] .dg-history-tree-check{color:#56d364}",
+      ".dg-history-tree-status{padding:2px 5px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#6e7781);overflow-wrap:anywhere}",
+      ".dg-history-tree-toggle{flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".dg-select{flex:1 1 auto;min-width:0;height:24px;padding:0 4px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:12px}",
-      ".dg-commit-list{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px 6px 10px}",
-      ".dg-commit-row{display:flex;align-items:stretch;gap:6px;padding:0 6px;border-radius:6px;cursor:pointer;min-width:0;height:44px}",
+      ".dg-commit-list{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px 6px 10px;outline:none}",
+      ".dg-commit-list:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
+      ".dg-commit-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;column-gap:6px;padding:0 6px;border-radius:6px;cursor:pointer;min-width:0;height:44px}",
+      ".dg-commit-main{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0}",
       ".dg-commit-body{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0;flex:1 1 auto}",
       ".dg-graph{flex:none;display:inline-flex;align-items:center;justify-content:center;align-self:stretch}",
       ".dg-graph-svg{display:block}",
@@ -3194,11 +3663,19 @@ function computeLanes(commits, options = {}) {
       ".dg-commit-line{display:flex;align-items:baseline;gap:6px;min-width:0}",
       ".dg-sha{flex:none;font-family:var(--dsh-font-mono,ui-monospace,monospace);font-size:11px;color:#0969da}",
       "body[data-ds-dark-theme] .dg-sha{color:#79c0ff}",
-      ".dg-commit-subject{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}",
+      ".dg-commit-subject{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}",
+      ".dg-commit-merge .dg-commit-subject{font-style:italic;color:var(--dsw-alias-label-secondary,#57606a)}",
+      ".dg-commit-refs{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;white-space:nowrap}",
       ".dg-commit-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781);min-width:0}",
-      ".dg-commit-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}",
+      ".dg-commit-author{width:96px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-secondary,#57606a)}",
+      ".dg-commit-date{flex:none;min-width:96px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#6e7781);white-space:nowrap}",
       ".dg-commit-time{flex:none;font-variant-numeric:tabular-nums}",
-      ".dg-ref-tag{flex:none;padding:0 4px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:4px;color:var(--dsw-alias-label-secondary,#57606a);font-size:10px;line-height:14px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-hide-author .dg-commit-author{display:none}",
+      ".dg-hide-hash .dg-commit-sha{display:none}",
+      ".dg-ref-tag{display:inline-flex;align-items:center;gap:3px;flex:none;padding:0 4px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:4px;color:var(--dsw-alias-label-secondary,#57606a);font-size:10px;line-height:14px;max-width:160px;overflow:hidden}",
+      ".dg-ref-dot{flex:none;width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.9}",
+      ".dg-ref-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".dg-ref-list{display:inline-flex;flex-wrap:wrap;gap:4px;min-width:0}",
       ".dg-ref-head{color:#116329;border-color:rgba(46,160,67,.45);background:rgba(46,160,67,.12)}",
       "body[data-ds-dark-theme] .dg-ref-head{color:#56d364;border-color:rgba(86,211,100,.4);background:rgba(86,211,100,.12)}",
       ".dg-ref-remote{color:#0950b8;border-color:rgba(47,129,247,.4);background:rgba(47,129,247,.1)}",
@@ -3279,9 +3756,12 @@ function computeLanes(commits, options = {}) {
       ".dg-filter-input{flex:1 1 0;min-width:58px;height:22px;padding:0 6px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328);font:inherit;font-size:11px;outline:none}",
       ".dg-filter-input::placeholder{color:var(--dsw-alias-label-tertiary,#6e7781)}",
       ".dg-filter-input:focus{border-color:var(--dsw-alias-border-l2,rgba(0,0,0,.22))}",
+      ".dg-filter-date{flex:0 0 auto;width:120px;padding:0 3px;font-size:10px;color-scheme:light dark}",
       ".dg-link-btn:disabled{opacity:.45;text-decoration:none;cursor:default}",
       ".dg-filter-active{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#6e7781)}",
-      ".dg-commit-row-head{background:rgba(247,129,102,.08)}",
+      ".dg-commit-row-head,.dg-commit-head{background:rgba(247,129,102,.08)}",
+      ".dg-commit-active{background:var(--dsw-alias-fill-l2,rgba(175,184,193,.28));box-shadow:inset 2px 0 0 var(--dsw-alias-label-primary,#1f2328)}",
+      "body[data-ds-dark-theme] .dg-commit-row-head,body[data-ds-dark-theme] .dg-commit-head{background:rgba(247,129,102,.14)}",
       ".dg-graph-dot-head{stroke-width:2.1}",
       // Changes: directory tree, hunk actions, amend + recent commit messages.
       ".dg-tree-dir{display:flex;flex-direction:column;min-width:0}",
@@ -3398,6 +3878,7 @@ function computeLanes(commits, options = {}) {
       "tabs.history": "历史",
       "summary.refresh": "刷新",
       "summary.detached": "HEAD 分离",
+      "summary.detachedHead": "游离 HEAD",
       "summary.ahead": "领先 {count}",
       "summary.behind": "落后 {count}",
       "summary.noUpstream": "无上游",
@@ -3467,6 +3948,22 @@ function computeLanes(commits, options = {}) {
       "history.filter.path": "筛选路径",
       "history.filter.clear": "清除",
       "history.filter.active": "已过滤",
+      "history.tree.title": "分支/范围",
+      "history.tree.toggle": "展开或折叠分支树",
+      "history.tree.head": "HEAD",
+      "history.tree.local": "本地分支",
+      "history.tree.remote": "远端分支",
+      "history.tree.all": "全部",
+      "history.tree.entry": "以 {branch} 作为日志范围",
+      "history.tree.loading": "正在读取分支…",
+      "history.tree.empty": "没有可用的分支",
+      "history.tree.error": "分支读取失败",
+      "history.range": "范围：{ref}",
+      "history.list.aria": "提交列表",
+      "history.jumpToHead": "跳到 HEAD",
+      "history.filter.since": "起始日期",
+      "history.filter.until": "结束日期",
+      "history.empty.dateRange": "所选日期范围内没有提交",
       "history.empty.filtered": "没有符合过滤条件的提交",
       "history.lanes.truncated": "分支泳道过多，只显示前 {max} 条分支线",
       "graph.headLabel": "当前 HEAD 所在的提交",
@@ -3563,6 +4060,7 @@ function computeLanes(commits, options = {}) {
       "tabs.history": "History",
       "summary.refresh": "Refresh",
       "summary.detached": "Detached HEAD",
+      "summary.detachedHead": "Detached HEAD",
       "summary.ahead": "{count} ahead",
       "summary.behind": "{count} behind",
       "summary.noUpstream": "No upstream",
@@ -3632,6 +4130,22 @@ function computeLanes(commits, options = {}) {
       "history.filter.path": "Filter path",
       "history.filter.clear": "Clear",
       "history.filter.active": "Filtered",
+      "history.tree.title": "Branches",
+      "history.tree.toggle": "Show or hide the branch tree",
+      "history.tree.head": "HEAD",
+      "history.tree.local": "Local",
+      "history.tree.remote": "Remote",
+      "history.tree.all": "All",
+      "history.tree.entry": "Use {branch} as the log range",
+      "history.tree.loading": "Reading branches…",
+      "history.tree.empty": "No branches available",
+      "history.tree.error": "Branches could not be loaded",
+      "history.range": "Range: {ref}",
+      "history.list.aria": "Commit list",
+      "history.jumpToHead": "Jump to HEAD",
+      "history.filter.since": "From date",
+      "history.filter.until": "To date",
+      "history.empty.dateRange": "No commits in the selected date range",
       "history.empty.filtered": "No commits match the filters",
       "history.lanes.truncated": "Too many branch lanes; only the first {max} are drawn",
       "graph.headLabel": "The commit HEAD points at",
@@ -3751,6 +4265,18 @@ function computeLanes(commits, options = {}) {
         statusMeta: statusMeta,
         formatRelativeTime: formatRelativeTime,
         formatAbsoluteTime: formatAbsoluteTime,
+        formatCommitDate: formatCommitDate,
+        normalizeDateValue: normalizeDateValue,
+        normalizeUntilValue: normalizeUntilValue,
+        resolveHistoryLayout: resolveHistoryLayout,
+        logQueryParams: logQueryParams,
+        summarizeHistoryFilters: summarizeHistoryFilters,
+        indexOfHeadCommit: indexOfHeadCommit,
+        refTagNode: refTagNode,
+        HISTORY_DEFAULT_WIDTH: HISTORY_DEFAULT_WIDTH,
+        HISTORY_TREE_BREAKPOINT: HISTORY_TREE_BREAKPOINT,
+        HISTORY_AUTHOR_BREAKPOINT: HISTORY_AUTHOR_BREAKPOINT,
+        HISTORY_HASH_BREAKPOINT: HISTORY_HASH_BREAKPOINT,
         formatLineNumber: formatLineNumber,
         modeKey: modeKey,
         apiUrl: apiUrl,
@@ -3762,6 +4288,7 @@ function computeLanes(commits, options = {}) {
         BranchPanel: BranchPanel,
         CommitGraph: CommitGraph,
         computeLanes: computeLanes,
+        resolveUpstream: resolveUpstream,
         LANE_COLORS: LANE_COLORS,
         GRAPH_HEAD_COLOR: GRAPH_HEAD_COLOR,
         GRAPH_MAX_LANES: GRAPH_MAX_LANES,

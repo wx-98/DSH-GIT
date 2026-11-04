@@ -202,3 +202,49 @@ $ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."
 - 泳道截断提示为启发式（`maxLanes >= GRAPH_MAX_LANES`），算法本身不返回截断标志。
 - hunk 补丁不包含 `\ No newline at end of file` 标记；无结尾换行的文件在 hunk 暂存时可能需要手动处理。
 - 网络操作（fetch/pull/push）、冲突解决界面、rebase、blame、并排 diff 不在本变更范围内。
+
+## 9. 0.4.0：git-history-idea-parity（OpenSpec 变更）验收
+
+变更：`openspec/changes/git-history-idea-parity/`（proposal / 3 份 delta spec / design / tasks 共 19 项，已全部勾选）。
+
+### 9.1 自动化测试
+
+```
+$ node --test test/host.test.js test/client.test.js test/graph-lanes.test.js
+ℹ tests 140
+ℹ pass 140
+ℹ fail 0
+```
+
+- `test/host.test.js` 47 项（原 41 + 6）：`GET /git/log` 的 `since`/`until`（区间、单边、边界当天、非法值 400 不跑 git、与 author 组合、无匹配空页、分页保持）。
+- `test/client.test.js` 73 项（原 56 + 17）：分支树三组与范围切换（只改 ref 不改 HEAD）、窄宽度折叠、树的三态、grid 列布局与日期格式、合并提交弱化、HEAD 强调、refs 胶囊色调、键盘导航、跳到 HEAD、日期过滤参数（`until` 归一化 23:59:59）、三种空状态、上游解析与三态渲染（有上游/无上游/游离 HEAD/roster 兜底）。
+- `test/graph-lanes.test.js` 20 项不变（内联算法与模块一致性用例仍绿）。
+
+### 9.2 真实实例端到端（安装后自检）
+
+```
+$ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."
+全部通过（共 26 项）
+```
+
+新增覆盖：**真实 upstream 断言**（本地裸远端 + `push -u` 后 `status.branch.upstream === "origin/main"`，分支列表当前项的 upstream 同样正确）与 **`GET /git/log` 日期范围**（六月区间只回 1 条、七月边界当天包含、未来起点空页、非法值 400）。
+
+### 9.3 浏览器 UI 回归（headless Chrome + CDP，真实点击）
+
+| 检查 | 结果 |
+|---|---|
+| 历史页双栏：左分支树（全部 / HEAD / 本地 / 远端）+ 右列表 | ✅ [截图](ui-history-idea.png) |
+| 列式布局：图 / 主题+refs / 作者 / `yyyy-MM-dd HH:mm` 日期 / 短哈希 | ✅ 同上 |
+| 合并提交斜体弱化、HEAD 行强调、refs 胶囊带色调点 | ✅ 同上（两处 `合并 feature/...` 为斜体灰） |
+| 日期过滤两个输入 + 清除；分支树选中显示「范围：…」 | ✅ 同上 |
+| **有上游时显示上游**：面板摘要显示 `领先 7 origin/main repo`，无「无上游」 | ✅ 同上 |
+| **游离 HEAD 不显示无上游**：`git checkout --detach` 后摘要显示「游离 HEAD」，`无上游` 不再出现 | ✅ [截图](ui-detached-head.png) |
+
+分叉 + 上游 + 固定日期的演示仓库通过临时 workspace 挂到独立 web 实例验证，验证后已还原注册表并删除临时仓库。
+
+### 9.4 已知限制（本变更内）
+
+- 分支树在窄面板下折叠为按钮（< 560px），不做分支搜索；分支数很多时靠滚动。
+- 日期过滤按**本地时区**解释；`until` 由客户端归一化为当天 23:59:59（git 的 date-only 语义取当前时钟，不能直接依赖）。
+- 列表不做虚拟滚动（每页 50 条）。
+- 网络操作、冲突解决、rebase、blame、并排 diff 仍不在范围内。

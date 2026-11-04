@@ -17,12 +17,14 @@ import { test } from "node:test";
 
 import { apply } from "../index.js";
 import {
+  GitError,
   buildUntrackedDiff,
   mergeCommitFiles,
   parseNameStatus,
   parseNumstat,
   parseStatusPorcelainV2,
   parseUnifiedDiff,
+  readLog,
 } from "../lib/git.js";
 
 // ---------------------------------------------------------------------------
@@ -1718,6 +1720,234 @@ test("GET /git/log combines filters, keeps paging and returns an empty page on n
   assert.equal(emptyGrep.json.code, "bad-request");
 });
 
+// ---------------------------------------------------------------------------
+// log date range filters (contract 1.5, git-host-api "日志查询支持日期范围")
+// ---------------------------------------------------------------------------
+
+/**
+ * Run git in a fixture repository with extra environment variables.
+ *
+ * The date range fixtures need GIT_AUTHOR_DATE/GIT_COMMITTER_DATE, and "git
+ * log --since/--until" filters on the commit (committer) date, so both must
+ * be pinned for the assertions to be deterministic.
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @param {Record<string, string>} env
+ * @returns {Promise<string>} stdout
+ */
+function gitRunWithEnv(cwd, args, env) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      {
+        cwd,
+        windowsHide: true,
+        maxBuffer: 32 * 1024 * 1024,
+        encoding: "buffer",
+        env: Object.assign({}, process.env, env),
+      },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(new Error("git " + args.join(" ") + " failed: " + stderr.toString("utf8")));
+          return;
+        }
+        resolve(stdout.toString("utf8"));
+      },
+    );
+  });
+}
+
+/**
+ * Commits of the date range fixture: one per month, 2026-05 .. 2026-08.
+ *
+ * The June/July/August commits sit at 23:59:59 so a date-only bound still
+ * contains its own day whatever time of day git resolves for a value without
+ * a time part (the client normalises "until" to T23:59:59, design D5).
+ */
+const DATED_COMMITS = [
+  { date: "2026-05-01T12:00:00", subject: "chore: may baseline", author: "DSH Test", email: "dsh@example.com" },
+  { date: "2026-06-15T23:59:59", subject: "feat: june work", author: "Alice", email: "alice@example.com" },
+  { date: "2026-07-01T23:59:59", subject: "feat: july work", author: "Alice", email: "alice@example.com" },
+  { date: "2026-08-20T23:59:59", subject: "fix: august work", author: "Bob", email: "bob@example.com" },
+];
+
+/**
+ * Create a temporary repository with the dated fixture commits.
+ *
+ * @param {import("node:test").TestContext} t
+ * @returns {Promise<string>} absolute repository path
+ */
+async function createDatedRepo(t) {
+  const directory = await createTempDir(t, "dsh-git-dated-");
+  await initRepo(directory);
+  for (const [index, commit] of DATED_COMMITS.entries()) {
+    await writeFiles(directory, { ["date-" + index + ".txt"]: commit.subject + "\n" });
+    await gitRun(directory, ["add", "-A"]);
+    await gitRunWithEnv(
+      directory,
+      ["-c", "user.name=" + commit.author, "-c", "user.email=" + commit.email, "commit", "-m", commit.subject],
+      { GIT_AUTHOR_DATE: commit.date, GIT_COMMITTER_DATE: commit.date },
+    );
+  }
+  return directory;
+}
+
+/**
+ * Build a GET /git/log request helper bound to one repository.
+ *
+ * @param {string} base harness base URL
+ * @param {string} repo absolute repository path
+ */
+function logPage(base, repo) {
+  return async (params) =>
+    (await getJson(base, "/git/log" + qs(Object.assign({ root: repo }, params)))).json;
+}
+
+/**
+ * Commit subjects of one GET /git/log response, newest first.
+ *
+ * @param {{ commits: Array<{ subject: string }> }} page
+ * @returns {string[]}
+ */
+function logSubjects(page) {
+  return page.commits.map((commit) => commit.subject);
+}
+
+test("GET /git/log filters by since and until", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+  const page = logPage(harness.base, repo);
+
+  // Both bounds: only the July commit is inside the range.
+  const july = await page({ since: "2026-07-01", until: "2026-07-31" });
+  assert.equal(july.ok, true);
+  assert.equal(july.ref, "HEAD");
+  assert.equal(july.hasMore, false);
+  assert.deepEqual(logSubjects(july), ["feat: july work"]);
+
+  // Each bound also works on its own.
+  const sinceOnly = await page({ since: "2026-08-01" });
+  assert.deepEqual(logSubjects(sinceOnly), ["fix: august work"]);
+  const untilOnly = await page({ until: "2026-07-31" });
+  assert.deepEqual(logSubjects(untilOnly), ["feat: july work", "feat: june work", "chore: may baseline"]);
+
+  // A date time bound keeps git's inclusive boundary: a commit exactly on the
+  // bound is still returned.
+  const exact = await page({ since: "2026-07-01T23:59:59" });
+  assert.deepEqual(logSubjects(exact), ["fix: august work", "feat: july work"]);
+});
+
+test("GET /git/log includes the boundary day once until is normalised to 23:59:59", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+  const page = logPage(harness.base, repo);
+
+  // The client normalises the end date to <date>T23:59:59 (design D5), which
+  // is what keeps the boundary day itself inside the range.
+  const endOfJuly1 = await page({ until: "2026-07-01T23:59:59" });
+  assert.deepEqual(logSubjects(endOfJuly1), ["feat: july work", "feat: june work", "chore: may baseline"]);
+
+  // Midnight of the same date excludes the commit made later that day.
+  const midnight = await page({ until: "2026-07-01T00:00:00" });
+  assert.deepEqual(logSubjects(midnight), ["feat: june work", "chore: may baseline"]);
+
+  // A date-only bound is forwarded verbatim (the host never invents a boundary):
+  // git resolves the missing time part itself, but June stays inside while
+  // August stays outside under any interpretation.
+  const dateOnly = await page({ until: "2026-07-01" });
+  assert.ok(logSubjects(dateOnly).includes("feat: june work"));
+  assert.ok(!logSubjects(dateOnly).includes("fix: august work"));
+});
+
+test("GET /git/log rejects malformed since and until values without running git", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+
+  const invalid = [
+    { since: "not-a-date" },
+    { until: "2026-13-99" },
+    { since: "" },
+    { until: "" },
+    { since: "2026-07-01T25:00" },
+    { until: "20260701" },
+  ];
+  for (const params of invalid) {
+    const response = await getJson(harness.base, "/git/log" + qs(Object.assign({ root: repo }, params)));
+    assert.equal(response.status, 400, "expected 400 for " + JSON.stringify(params));
+    assert.equal(response.json.code, "bad-request", "expected bad-request for " + JSON.stringify(params));
+    assert.equal(typeof response.json.message, "string");
+  }
+
+  // Validation runs before the first git process: readLog() rejects the date
+  // for a directory that is not even a repository. If git had been consulted
+  // first this would be a git-failed error instead.
+  const plainDirectory = await createTempDir(t, "dsh-git-no-date-");
+  await assert.rejects(
+    readLog(plainDirectory, { since: "not-a-date" }),
+    (error) => error instanceof GitError && error.code === "bad-request",
+  );
+  await assert.rejects(
+    readLog(plainDirectory, { until: "" }),
+    (error) => error instanceof GitError && error.code === "bad-request",
+  );
+  // Control: with a valid range the same directory does reach git and fails there.
+  await assert.rejects(
+    readLog(plainDirectory, { ref: "main", since: "2026-07-01" }),
+    (error) => error instanceof GitError && error.code === "git-failed",
+  );
+});
+
+test("GET /git/log combines the date range with the author filter", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+  const page = logPage(harness.base, repo);
+
+  const aliceInRange = await page({ author: "Alice", since: "2026-06-01", until: "2026-07-31" });
+  assert.deepEqual(logSubjects(aliceInRange), ["feat: july work", "feat: june work"]);
+
+  // The filters intersect: Bob only committed in August.
+  const bobInRange = await page({ author: "Bob", since: "2026-06-01", until: "2026-07-31" });
+  assert.deepEqual(logSubjects(bobInRange), []);
+  assert.equal(bobInRange.hasMore, false);
+
+  // A single date bound combines with the author filter as well.
+  const aliceSince = await page({ author: "Alice", since: "2026-07-01" });
+  assert.deepEqual(logSubjects(aliceSince), ["feat: july work"]);
+});
+
+test("GET /git/log returns an empty page when the date range matches nothing", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+  const page = logPage(harness.base, repo);
+
+  const empty = await getJson(harness.base, "/git/log" + qs({ root: repo, since: "2026-09-01", until: "2026-09-30" }));
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.json, { ok: true, ref: "HEAD", hasMore: false, commits: [] });
+
+  // A range that starts after the last commit is empty too.
+  const future = await page({ since: "2027-01-01" });
+  assert.deepEqual(future, { ok: true, ref: "HEAD", hasMore: false, commits: [] });
+
+  // Combining with another filter keeps the same empty shape.
+  const emptyAuthor = await page({ author: "Bob", since: "2026-05-01", until: "2026-06-30" });
+  assert.deepEqual(emptyAuthor, { ok: true, ref: "HEAD", hasMore: false, commits: [] });
+});
+
+test("GET /git/log keeps hasMore and skip working on top of the date range", async (t) => {
+  const repo = await createDatedRepo(t);
+  const harness = await createHarness(t);
+  const page = logPage(harness.base, repo);
+
+  const firstPage = await page({ since: "2026-06-01", until: "2026-07-31", limit: 1 });
+  assert.deepEqual(logSubjects(firstPage), ["feat: july work"]);
+  assert.equal(firstPage.hasMore, true);
+
+  const secondPage = await page({ since: "2026-06-01", until: "2026-07-31", limit: 1, skip: 1 });
+  assert.deepEqual(logSubjects(secondPage), ["feat: june work"]);
+  assert.equal(secondPage.hasMore, false);
+});
 // ---------------------------------------------------------------------------
 // transport guards for the new routes (contract 1.5 + contract 1.4)
 // ---------------------------------------------------------------------------

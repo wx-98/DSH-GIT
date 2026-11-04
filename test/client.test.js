@@ -1582,6 +1582,117 @@ test("the branch chip inherits the host font instead of the monospace stack", ()
   assert.ok(!INTERNALS.CSS_TEXT.includes(".dg-chip-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family"));
 });
 
+test("resolveUpstream decides detached, upstream, roster fallback and none", () => {
+  const detached = INTERNALS.resolveUpstream({ name: "HEAD", detached: true, upstream: null }, null, "HEAD");
+  assert.deepEqual(Array.from(Object.values(detached)), ["detached", ""]);
+  const direct = INTERNALS.resolveUpstream({ name: "main", detached: false, upstream: "origin/main" }, null, "main");
+  assert.equal(direct.kind, "upstream");
+  assert.equal(direct.name, "origin/main");
+  // Status has not learned the upstream yet: the branch roster is the fallback.
+  const fallback = INTERNALS.resolveUpstream(
+    { name: "main", detached: false, upstream: null },
+    { local: [{ name: "main", isCurrent: true, upstream: "origin/main" }] },
+    "main",
+  );
+  assert.equal(fallback.kind, "upstream");
+  assert.equal(fallback.name, "origin/main");
+  const none = INTERNALS.resolveUpstream(
+    { name: "dev", detached: false, upstream: null },
+    { local: [{ name: "dev", isCurrent: true, upstream: null }] },
+    "dev",
+  );
+  assert.equal(none.kind, "none");
+  assert.equal(none.name, "");
+  // A detached HEAD must never fall through to the roster.
+  const detachedFallback = INTERNALS.resolveUpstream(
+    { name: "HEAD", detached: true, upstream: null },
+    { local: [{ name: "main", isCurrent: true, upstream: "origin/main" }] },
+    "HEAD",
+  );
+  assert.equal(detachedFallback.kind, "detached");
+});
+
+test("the branch panel shows the upstream when one exists and never claims none", async () => {
+  const env = createHookEnvironment();
+  env.client.controller.responder = routeResponder({ "/git/branches": jsonResponse(HOOK_BRANCHES) });
+  const handle = await env.mount(env.internals.BranchPanel, { root: "/tmp/repo", status: HOOK_STATUS, t: T });
+  try {
+    const html = handle.html();
+    assert.match(html, /origin\/main/);
+    assert.ok(!html.includes(T("chip.noUpstream")), "a branch with an upstream must not render the no-upstream label");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("a detached HEAD says detached instead of no upstream", async () => {
+  const env = createHookEnvironment();
+  const detachedStatus = {
+    ...HOOK_STATUS,
+    branch: { name: "HEAD", detached: true, sha: "aaa111", shortSha: "aaa111", upstream: null, ahead: 0, behind: 0 },
+  };
+  env.client.controller.responder = routeResponder({ "/git/branches": jsonResponse(HOOK_BRANCHES) });
+  const panel = await env.mount(env.internals.BranchPanel, { root: "/tmp/repo", status: detachedStatus, t: T });
+  try {
+    const html = panel.html();
+    assert.match(html, /游离 HEAD/);
+    assert.ok(!html.includes(T("chip.noUpstream")), "a detached HEAD must not render the no-upstream label");
+  } finally {
+    panel.unmount();
+  }
+});
+
+test("a branch with no upstream at all renders the no-upstream label", async () => {
+  const env = createHookEnvironment();
+  const bareStatus = {
+    ...HOOK_STATUS,
+    branch: { name: "dev", detached: false, sha: "bbb222", shortSha: "bbb222", upstream: null, ahead: 0, behind: 0 },
+  };
+  const bareBranches = {
+    ok: true,
+    current: "dev",
+    detached: false,
+    local: [{ name: "dev", sha: "bbb222", upstream: null, ahead: 0, behind: 0, isCurrent: true }],
+    remote: [],
+  };
+  env.client.controller.responder = routeResponder({ "/git/branches": jsonResponse(bareBranches) });
+  const panel = await env.mount(env.internals.BranchPanel, { root: "/tmp/repo", status: bareStatus, t: T });
+  try {
+    assert.match(panel.html(), /无上游/);
+  } finally {
+    panel.unmount();
+  }
+});
+
+test("the panel summary falls back to the branch roster for the upstream name", async () => {
+  const env = createHookEnvironment();
+  const statusWithoutUpstream = {
+    ...HOOK_STATUS,
+    branch: { name: "main", detached: false, sha: "aaa111", shortSha: "aaa111", upstream: null, ahead: 0, behind: 0 },
+  };
+  env.client.controller.responder = routeResponder({
+    "/git/status": jsonResponse(statusWithoutUpstream),
+    "/git/branches": jsonResponse(HOOK_BRANCHES),
+    "/git/stats": jsonResponse({ ok: true, staged: {}, unstaged: {} }),
+  });
+  const handle = await env.mount(env.internals.GitBody, {
+    sessionId: "s1",
+    useSessions: (selector) => selector({ byId: { s1: { cwd: "/tmp/repo" } } }),
+    // The visible tab starts the 4s poll interval; keep it hidden so the hook
+    // harness settles instead of chasing the poll timer.
+    useTabInfo: () => ({ tab: { visible: false } }),
+    t: T,
+  });
+  try {
+    const html = handle.html();
+    assert.match(html, /dg-summary/);
+    assert.match(html, /origin\/main/);
+    assert.ok(!html.includes(T("summary.noUpstream")), "the roster fallback must replace the no-upstream label");
+  } finally {
+    handle.unmount();
+  }
+});
+
 test("the branch panel lists the current branch, both groups and the current tick", async () => {
   const env = createHookEnvironment();
   env.client.controller.responder = routeResponder({
@@ -2281,7 +2392,23 @@ test("all git-idea-parity client i18n keys exist in both dictionaries", () => {
     "history.filter.clear",
     "history.filter.active",
     "history.empty.filtered",
+    "history.empty.dateRange",
     "history.lanes.truncated",
+    "history.tree.title",
+    "history.tree.toggle",
+    "history.tree.head",
+    "history.tree.local",
+    "history.tree.remote",
+    "history.tree.all",
+    "history.tree.entry",
+    "history.tree.loading",
+    "history.tree.empty",
+    "history.tree.error",
+    "history.range",
+    "history.list.aria",
+    "history.jumpToHead",
+    "history.filter.since",
+    "history.filter.until",
     "graph.headLabel",
     "changes.amend",
     "changes.amend.button",
@@ -2302,4 +2429,469 @@ test("all git-idea-parity client i18n keys exist in both dictionaries", () => {
   }
   assert.notEqual(DICTIONARIES.zh["history.refRange"], DICTIONARIES.en["history.refRange"]);
   assert.ok(!zhKeys.has("history.branch"), "the old ambiguous 'branch' label is gone");
+});
+
+// ---------------------------------------------------------------------------
+// 12. Group 3-5: branch tree, column layout, merge styling, keyboard, dates
+// ---------------------------------------------------------------------------
+
+/** Three commits: HEAD, a merge commit and a root; row 0 carries three refs. */
+const HISTORY_COLUMNS_COMMITS = [
+  {
+    sha: "aaa111", shortSha: "aaa111", author: "Wang", email: "w@x.io", time: 1700000000,
+    subject: "feat: add git plugin", parents: ["bbb222"],
+    refs: ["HEAD -> main", "origin/main", "dev"],
+  },
+  {
+    sha: "bbb222", shortSha: "bbb222", author: "Li", email: "l@x.io", time: 1699900000,
+    subject: "merge: bring dev in", parents: ["ccc333", "ddd444"], refs: [],
+  },
+  {
+    sha: "ccc333", shortSha: "ccc333", author: "Zhao", email: "z@x.io", time: 1699800000,
+    subject: "test: cover lanes", parents: [], refs: [],
+  },
+];
+
+/** Mount HistoryPane against the hook harness with a fixed, test-only width. */
+async function mountHistory(options) {
+  const settings = options === null || options === undefined ? {} : options;
+  const env = createHookEnvironment();
+  env.client.controller.responder = routeResponder({
+    "/git/log": jsonResponse({ ok: true, commits: settings.commits === undefined ? HOOK_LOG_COMMITS : settings.commits, hasMore: false }),
+    "/git/branches": jsonResponse(settings.branches === undefined ? HOOK_BRANCHES : settings.branches),
+  });
+  const props = { cwd: "/tmp/repo", t: T };
+  if (settings.width !== undefined) props.width = settings.width;
+  const handle = await env.mount(env.internals.HistoryPane, props);
+  return { env: env, handle: handle };
+}
+
+function historyLogUrl(env) {
+  const calls = env.client.requests.filter(function (request) { return request.url.indexOf("/git/log") === 0; });
+  return calls[calls.length - 1].url;
+}
+
+function activeCommitIndex(handle) {
+  const rows = findAllByClass(handle, "dg-commit-row");
+  for (let index = 0; index < rows.length; index += 1) if (hasClass(rows[index], "dg-commit-active")) return index;
+  return -1;
+}
+
+test("history layout resolves the tree, author and hash columns from the panel width", () => {
+  const { resolveHistoryLayout } = INTERNALS;
+  function shape(width) {
+    const layout = resolveHistoryLayout(width);
+    return [layout.treeCollapsed, layout.showAuthor, layout.showHash];
+  }
+  assert.deepEqual(shape(720), [false, true, true]);
+  assert.deepEqual(shape(640), [false, true, true], "640px still fits the author column");
+  assert.deepEqual(shape(639), [false, false, true], "below 640 the author column goes first");
+  assert.deepEqual(shape(560), [false, false, true], "560px still shows the tree");
+  assert.deepEqual(shape(559), [true, false, true], "below 560 the tree folds");
+  assert.deepEqual(shape(520), [true, false, true], "520px still shows the hash");
+  assert.deepEqual(shape(519), [true, false, false], "below 520 the hash column goes too");
+  assert.deepEqual(shape(10), [true, false, false]);
+  for (const unusable of [0, -20, Number.NaN, null, undefined, "760"]) {
+    const layout = resolveHistoryLayout(unusable);
+    assert.equal(layout.width, INTERNALS.HISTORY_DEFAULT_WIDTH, "unusable widths fall back to the default");
+    assert.equal(layout.treeCollapsed, false);
+    assert.equal(layout.showAuthor, true);
+    assert.equal(layout.showHash, true);
+  }
+  assert.equal(INTERNALS.HISTORY_TREE_BREAKPOINT, 560);
+  assert.equal(INTERNALS.HISTORY_AUTHOR_BREAKPOINT, 640);
+  assert.equal(INTERNALS.HISTORY_HASH_BREAKPOINT, 520);
+  assert.equal(INTERNALS.HISTORY_DEFAULT_WIDTH, 720);
+});
+
+test("commit dates render as local yyyy-MM-dd HH:mm with a relative tooltip", () => {
+  const { formatCommitDate, formatRelativeTime } = INTERNALS;
+  const seconds = 1700000000;
+  const date = new Date(seconds * 1000);
+  const pad = function (value) { return value < 10 ? "0" + String(value) : String(value); };
+  const expected = String(date.getFullYear()) + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+    + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+  assert.equal(formatCommitDate(seconds), expected);
+  assert.match(formatCommitDate(seconds), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.equal(formatCommitDate(null), "");
+  assert.equal(formatCommitDate(0), "");
+  assert.equal(formatCommitDate(-5), "");
+  assert.equal(formatCommitDate("1700000000"), "");
+  assert.equal(typeof formatRelativeTime(seconds, Date.now(), T), "string");
+});
+
+test("date filters keep since as-is and normalize until to the end of the day", () => {
+  const { normalizeDateValue, normalizeUntilValue, logQueryParams, summarizeHistoryFilters } = INTERNALS;
+  assert.equal(normalizeDateValue("2026-10-01"), "2026-10-01");
+  assert.equal(normalizeDateValue(" 2026-10-01 "), "2026-10-01");
+  assert.equal(normalizeDateValue("2026-10"), "");
+  assert.equal(normalizeDateValue("2026-1-1"), "");
+  assert.equal(normalizeDateValue("tomorrow"), "");
+  assert.equal(normalizeDateValue(null), "");
+  assert.equal(normalizeUntilValue("2026-10-31"), "2026-10-31T23:59:59", "the until bound covers the whole day (design D5)");
+  assert.equal(normalizeUntilValue(""), "");
+  assert.equal(normalizeUntilValue(null), "");
+  const query = logQueryParams({ grep: " fix ", author: " Wang ", path: " src/a.ts ", since: "2026-10-01", until: "2026-10-31" });
+  assert.deepEqual([query.grep, query.author, query.path, query.since, query.until],
+    ["fix", "Wang", "src/a.ts", "2026-10-01", "2026-10-31T23:59:59"]);
+  const bare = logQueryParams(null);
+  assert.deepEqual([bare.grep, bare.author, bare.path, bare.since, bare.until], ["", "", "", "", ""]);
+  const emptyQuery = logQueryParams({});
+  assert.deepEqual([emptyQuery.grep, emptyQuery.author, emptyQuery.path, emptyQuery.since, emptyQuery.until], ["", "", "", "", ""]);
+  const textOnly = summarizeHistoryFilters({ grep: "fix", author: "", path: "", since: "", until: "" });
+  assert.deepEqual([textOnly.text, textOnly.date, textOnly.active], [true, false, true]);
+  const dateOnly = summarizeHistoryFilters({ grep: "", author: "", path: "", since: "2026-10-01", until: "" });
+  assert.deepEqual([dateOnly.text, dateOnly.date, dateOnly.active], [false, true, true]);
+  assert.equal(summarizeHistoryFilters(null).active, false);
+});
+
+test("history tree, grid columns and merge styling follow the design constraints", () => {
+  const lines = INTERNALS.CSS_TEXT.split(NL);
+  function ruleFor(selector) {
+    return lines.find(function (line) { return line.indexOf(selector + "{") === 0; });
+  }
+  const tree = ruleFor(".dg-history-tree");
+  assert.ok(tree, ".dg-history-tree must be styled");
+  assert.ok(tree.includes("flex:0 0 176px"), "the tree keeps its fixed 176px column (design D1)");
+  assert.ok(ruleFor(".dg-history-body").includes("display:flex"));
+  const row = ruleFor(".dg-commit-row");
+  assert.ok(row.includes("display:grid"), "commit rows are a grid (design D3)");
+  assert.ok(row.includes("grid-template-columns"), "the grid declares its columns");
+  assert.ok(row.includes("minmax(0,1fr)"), "the subject column flexes and can shrink");
+  const merge = ruleFor(".dg-commit-merge .dg-commit-subject");
+  assert.ok(merge, "merge commits weaken the subject");
+  assert.ok(merge.includes("font-style:italic"));
+  assert.ok(merge.includes("var(--dsw-alias-label-secondary,#57606a)"));
+  assert.ok(ruleFor(".dg-commit-active").includes("background"), "the keyboard selection is visible");
+  assert.ok(ruleFor(".dg-hide-author .dg-commit-author").includes("display:none"));
+  assert.ok(ruleFor(".dg-hide-hash .dg-commit-sha").includes("display:none"));
+  assert.ok(ruleFor(".dg-commit-date").includes("tabular-nums"));
+  assert.ok(ruleFor(".dg-ref-dot").includes("background:currentColor"), "ref pills carry a tone dot");
+  assert.ok(ruleFor(".dg-history-tree-dot-head").includes("#2da44e"), "the HEAD group dot is green");
+  assert.ok(ruleFor("body[data-ds-dark-theme] .dg-ref-remote"), "remote pills keep a dark-theme override");
+  assert.ok(ruleFor(".dg-commit-row-head,.dg-commit-head").includes("rgba(247,129,102,.08)"), "HEAD rows keep the emphasis tint");
+});
+
+test("the history view renders a branch tree with HEAD, local and remote groups", async () => {
+  const mounted = await mountHistory({ width: 720 });
+  const handle = mounted.handle;
+  try {
+    const html = handle.html();
+    assert.ok(html.includes("dg-history-body"));
+    const tree = findNodeByClass(handle, "dg-history-tree");
+    assert.ok(tree, "a wide panel shows the tree");
+    assert.equal(tree.type, "aside");
+    assert.equal(tree.props["aria-label"], T("history.tree.title"));
+    assert.ok(html.includes(T("history.tree.head")));
+    assert.ok(html.includes(T("history.tree.local")));
+    assert.ok(html.includes(T("history.tree.remote")));
+    const items = findAllByClass(handle, "dg-history-tree-item");
+    const labels = items.map(function (item) { return buttonText(item).split("\u2713").join(""); });
+    assert.deepEqual(labels, [T("history.tree.all"), "main", "main", "dev", "feature/x", "origin/main"]);
+    assert.equal(findAllByClass(handle, "dg-history-tree-check").length, 2, "the HEAD group and the current local branch are ticked");
+    assert.ok(html.includes("\u2713"));
+    assert.ok(findButtonByAria(handle, T("history.tree.entry", { branch: "dev" })));
+    const all = findButtonByAria(handle, T("history.tree.all"));
+    assert.ok(all);
+    assert.ok(hasClass(all, "dg-history-tree-item-current"), "All is the default range");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("clicking a branch in the tree only changes the log range", async () => {
+  const mounted = await mountHistory({ width: 720 });
+  const env = mounted.env;
+  const handle = mounted.handle;
+  try {
+    const dev = findButtonByAria(handle, T("history.tree.entry", { branch: "dev" }));
+    await handle.act(function () { return dev.props.onClick(); });
+    assert.ok(historyLogUrl(env).includes("ref=dev"), "the log is requested for the picked branch");
+    assert.equal(env.client.requests.filter(function (request) { return request.url === "/git/checkout"; }).length, 0,
+      "picking a range must never check the branch out (design D2)");
+    assert.ok(handle.html().includes(T("history.range", { ref: "dev" })), "the current range is visible");
+    assert.notEqual(findNodeByClass(handle, "dg-checkout-btn").props.disabled, true, "the explicit checkout action arms once a range is chosen");
+
+    const all = findButtonByAria(handle, T("history.tree.all"));
+    await handle.act(function () { return all.props.onClick(); });
+    assert.ok(historyLogUrl(env).includes("ref=HEAD"), "All resets the range to HEAD");
+    assert.ok(handle.html().includes(T("history.range", { ref: T("history.head") })));
+    assert.equal(findNodeByClass(handle, "dg-checkout-btn").props.disabled, true);
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("a narrow panel folds the branch tree behind a toggle", async () => {
+  const mounted = await mountHistory({ width: 500 });
+  const env = mounted.env;
+  const handle = mounted.handle;
+  try {
+    assert.equal(findNodeByClass(handle, "dg-history-tree"), undefined, "the tree starts folded");
+    const list = findNodeByClass(handle, "dg-commit-list");
+    assert.ok(hasClass(list, "dg-hide-author"), "the list stays readable on a narrow panel");
+    assert.ok(hasClass(list, "dg-hide-hash"));
+    const toggle = findButtonByAria(handle, T("history.tree.toggle"));
+    assert.ok(toggle);
+    assert.equal(buttonText(toggle), T("history.tree.title"));
+    assert.equal(toggle.props["aria-expanded"], "false");
+    await handle.act(function () { return toggle.props.onClick(); });
+    const tree = findNodeByClass(handle, "dg-history-tree");
+    assert.ok(tree, "the toggle opens the tree");
+    assert.ok(hasClass(tree, "dg-history-tree-pop"), "the folded tree opens as a popover");
+    const dev = findButtonByAria(handle, T("history.tree.entry", { branch: "dev" }));
+    await handle.act(function () { return dev.props.onClick(); });
+    assert.ok(historyLogUrl(env).includes("ref=dev"));
+    assert.equal(findNodeByClass(handle, "dg-history-tree"), undefined, "picking a branch folds the tree again");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("the branch tree shows loading, empty and failure text", async () => {
+  const loadingEnv = createHookEnvironment();
+  loadingEnv.client.controller.responder = routeResponder({
+    "/git/log": jsonResponse({ ok: true, commits: [], hasMore: false }),
+    "/git/branches": function () { return new Promise(function () {}); },
+  });
+  const loading = await loadingEnv.mount(loadingEnv.internals.HistoryPane, { cwd: "/tmp/repo", t: T, width: 720 });
+  try {
+    assert.ok(loading.html().includes(T("history.tree.loading")));
+  } finally {
+    loading.unmount();
+  }
+
+  const failingEnv = createHookEnvironment();
+  failingEnv.client.controller.responder = routeResponder({
+    "/git/log": jsonResponse({ ok: true, commits: [], hasMore: false }),
+    "/git/branches": jsonResponse({ ok: false, code: "git-failed", message: "fatal: bad revision" }, 500),
+  });
+  const failing = await failingEnv.mount(failingEnv.internals.HistoryPane, { cwd: "/tmp/repo", t: T, width: 720 });
+  try {
+    assert.ok(failing.html().includes(T("history.tree.error")));
+  } finally {
+    failing.unmount();
+  }
+
+  const emptyEnv = createHookEnvironment();
+  emptyEnv.client.controller.responder = routeResponder({
+    "/git/log": jsonResponse({ ok: true, commits: [], hasMore: false }),
+    "/git/branches": jsonResponse({ ok: true, current: "", detached: false, local: [], remote: [] }),
+  });
+  const empty = await emptyEnv.mount(emptyEnv.internals.HistoryPane, { cwd: "/tmp/repo", t: T, width: 720 });
+  try {
+    assert.ok(empty.html().includes(T("history.tree.empty")));
+    assert.ok(!empty.html().includes(T("history.tree.loading")));
+  } finally {
+    empty.unmount();
+  }
+});
+
+test("commit rows use the column layout with date, author and short hash", async () => {
+  const mounted = await mountHistory({ width: 720, commits: HISTORY_COLUMNS_COMMITS });
+  const handle = mounted.handle;
+  try {
+    const rows = findAllByClass(handle, "dg-commit-row");
+    assert.equal(rows.length, 3);
+    for (const row of rows) {
+      assert.match(String(row.props.style.gridTemplateColumns), /^\d+px minmax\(0,1fr\) auto auto auto$/);
+    }
+    const html = handle.html();
+    assert.ok(html.includes(INTERNALS.formatCommitDate(1700000000)), "the absolute date is rendered");
+    assert.ok(html.includes("Wang"), "the author column is rendered");
+    assert.ok(html.includes("aaa111"), "the short hash column is rendered");
+    const dates = findAllByClass(handle, "dg-commit-date");
+    assert.equal(dates.length, 3);
+    assert.equal(buttonText(dates[0]), INTERNALS.formatCommitDate(1700000000));
+    assert.equal(dates[0].props.title, INTERNALS.formatRelativeTime(1700000000, Date.now(), T),
+      "the date tooltip carries the relative time");
+    const list = findNodeByClass(handle, "dg-commit-list");
+    assert.ok(!hasClass(list, "dg-hide-author"));
+    assert.ok(!hasClass(list, "dg-hide-hash"));
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("merge commits are weakened and the HEAD row keeps its emphasis", async () => {
+  const mounted = await mountHistory({ width: 720, commits: HISTORY_COLUMNS_COMMITS });
+  const handle = mounted.handle;
+  try {
+    const rows = findAllByClass(handle, "dg-commit-row");
+    assert.ok(hasClass(rows[0], "dg-commit-row-head"), "the HEAD row keeps the legacy emphasis class");
+    assert.ok(hasClass(rows[0], "dg-commit-head"));
+    assert.ok(!hasClass(rows[0], "dg-commit-merge"));
+    assert.ok(hasClass(rows[1], "dg-commit-merge"), "a two-parent commit is a merge commit");
+    assert.ok(!hasClass(rows[1], "dg-commit-row-head"));
+    assert.ok(!hasClass(rows[2], "dg-commit-merge"));
+    assert.equal(activeCommitIndex(handle), 0, "the first row starts selected");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("ref pills distinguish HEAD, remote and local branches with a tone dot", async () => {
+  const mounted = await mountHistory({ width: 720, commits: HISTORY_COLUMNS_COMMITS });
+  const handle = mounted.handle;
+  try {
+    const tags = findAllByClass(handle, "dg-ref-tag");
+    assert.equal(tags.length, 3);
+    assert.ok(hasClass(tags[0], "dg-ref-head"));
+    assert.ok(hasClass(tags[1], "dg-ref-remote"));
+    assert.ok(hasClass(tags[2], "dg-ref-local"));
+    for (const tag of tags) {
+      const children = Array.isArray(tag.props.children) ? tag.props.children : [tag.props.children];
+      assert.ok(children.some(function (child) {
+        return child !== null && typeof child === "object" && hasClass(child, "dg-ref-dot");
+      }), "each pill carries its tone dot");
+    }
+    assert.equal(findAllByClass(handle, "dg-ref-dot").length, 3);
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("the commit list is keyboard navigable and Enter opens the selected commit", async () => {
+  const mounted = await mountHistory({ width: 720, commits: HISTORY_COLUMNS_COMMITS });
+  const handle = mounted.handle;
+  try {
+    const list = findNodeByClass(handle, "dg-commit-list");
+    assert.equal(list.props.tabIndex, 0, "the list container is focusable (design D7)");
+    const scrollCalls = [];
+    const fakeNode = { scrollIntoView: function (options) { scrollCalls.push(options); } };
+    for (const row of findAllByClass(handle, "dg-commit-row")) row.props.ref(fakeNode);
+
+    async function press(key) {
+      const node = findNodeByClass(handle, "dg-commit-list");
+      await handle.act(function () { return node.props.onKeyDown({ key: key, preventDefault: function () {} }); });
+    }
+
+    assert.equal(activeCommitIndex(handle), 0);
+    await press("ArrowDown");
+    assert.equal(activeCommitIndex(handle), 1);
+    assert.equal(scrollCalls.length > 0, true, "the moved selection is scrolled into view");
+    assert.equal(scrollCalls[scrollCalls.length - 1].block, "nearest", "the moved selection is scrolled into view");
+    await press("ArrowDown");
+    await press("ArrowDown");
+    assert.equal(activeCommitIndex(handle), 2, "the selection clamps at the last row");
+    await press("Home");
+    assert.equal(activeCommitIndex(handle), 0);
+    await press("End");
+    assert.equal(activeCommitIndex(handle), 2);
+    await press("ArrowUp");
+    assert.equal(activeCommitIndex(handle), 1);
+    await press("Enter");
+    assert.ok(handle.html().includes(T("history.detail.title")), "Enter opens the commit detail");
+    assert.ok(handle.html().includes("dg-detail"));
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("the toolbar jumps the selection to the HEAD row", async () => {
+  const commits = [
+    { sha: "aaa111", shortSha: "aaa111", author: "Wang", time: 1700000000, subject: "tip", parents: ["bbb222"], refs: [] },
+    { sha: "bbb222", shortSha: "bbb222", author: "Li", time: 1699900000, subject: "middle", parents: ["ccc333"], refs: [] },
+    { sha: "ccc333", shortSha: "ccc333", author: "Zhao", time: 1699800000, subject: "base", parents: [], refs: ["HEAD -> main"] },
+  ];
+  const mounted = await mountHistory({ width: 720, commits: commits });
+  const handle = mounted.handle;
+  try {
+    const scrollCalls = [];
+    const fakeNode = { scrollIntoView: function (options) { scrollCalls.push(options); } };
+    for (const row of findAllByClass(handle, "dg-commit-row")) row.props.ref(fakeNode);
+    assert.equal(activeCommitIndex(handle), 0);
+    const jump = findButtonByAria(handle, T("history.jumpToHead"));
+    assert.ok(jump);
+    assert.notEqual(jump.props.disabled, true);
+    await handle.act(function () { return jump.props.onClick(); });
+    assert.equal(activeCommitIndex(handle), 2, "HEAD is the third commit in the page");
+    assert.equal(scrollCalls[scrollCalls.length - 1].block, "nearest");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("date filters send since as-is and until at the end of the day, and clear resets them", async () => {
+  const mounted = await mountHistory({ width: 720 });
+  const env = mounted.env;
+  const handle = mounted.handle;
+  try {
+    assert.equal(findNodeByClass(handle, "dg-filter-clear").props.disabled, true, "clear stays disabled without filters");
+    const since = findInputByAria(handle, T("history.filter.since"));
+    const until = findInputByAria(handle, T("history.filter.until"));
+    assert.ok(since);
+    assert.ok(until);
+    assert.equal(since.props.type, "date");
+    assert.equal(until.props.type, "date");
+    await handle.act(function () { return since.props.onChange({ target: { value: "2026-10-01" } }); });
+    assert.ok(historyLogUrl(env).includes("since=2026-10-01"));
+    assert.ok(!historyLogUrl(env).includes("until="), "an empty until is not sent");
+    await handle.act(function () { return until.props.onChange({ target: { value: "2026-10-31" } }); });
+    const filteredUrl = historyLogUrl(env);
+    assert.ok(filteredUrl.includes("since=2026-10-01"));
+    assert.ok(filteredUrl.includes("until=2026-10-31T23%3A59%3A59"), "until covers the whole chosen day (design D5)");
+    assert.ok(handle.html().includes(T("history.filter.active")));
+    const clear = findNodeByClass(handle, "dg-filter-clear");
+    assert.equal(clear.props.disabled, false);
+    await handle.act(function () { return clear.props.onClick(); });
+    const cleared = historyLogUrl(env);
+    assert.ok(!cleared.includes("since="), "clear drops since");
+    assert.ok(!cleared.includes("until="), "clear drops until");
+    assert.equal(findNodeByClass(handle, "dg-filter-clear").props.disabled, true);
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("the date-range empty state is distinct from the filtered and empty-history states", async () => {
+  assert.notEqual(T("history.empty"), T("history.empty.filtered"));
+  assert.notEqual(T("history.empty.filtered"), T("history.empty.dateRange"));
+  assert.notEqual(T("history.empty"), T("history.empty.dateRange"));
+  const mounted = await mountHistory({ width: 720, commits: [] });
+  const handle = mounted.handle;
+  try {
+    assert.ok(handle.html().includes(T("history.empty")), "an empty history keeps its own message");
+    const since = findInputByAria(handle, T("history.filter.since"));
+    await handle.act(function () { return since.props.onChange({ target: { value: "2026-10-01" } }); });
+    const dated = handle.html();
+    assert.ok(dated.includes(T("history.empty.dateRange")));
+    assert.ok(!dated.includes(T("history.empty.filtered")));
+    assert.ok(!dated.includes(T("history.empty")), "the plain empty state gives way to the date one");
+  } finally {
+    handle.unmount();
+  }
+});
+
+test("narrow panels hide the author column first and the hash column last", async () => {
+  const cases = [
+    { width: 700, author: false, hash: false },
+    { width: 630, author: true, hash: false },
+    { width: 500, author: true, hash: true },
+  ];
+  for (const entry of cases) {
+    const mounted = await mountHistory({ width: entry.width });
+    const handle = mounted.handle;
+    try {
+      const list = findNodeByClass(handle, "dg-commit-list");
+      assert.equal(hasClass(list, "dg-hide-author"), entry.author, "author visibility at " + String(entry.width));
+      assert.equal(hasClass(list, "dg-hide-hash"), entry.hash, "hash visibility at " + String(entry.width));
+    } finally {
+      handle.unmount();
+    }
+  }
+});
+
+test("the ResizeObserver path is guarded for environments without it", async () => {
+  assert.ok(SOURCE.includes('typeof ResizeObserver === "function"'), "the bundle must guard the observer");
+  assert.ok(!SOURCE.includes("window.ResizeObserver"), "the observer is read from the script scope, not window");
+  const mounted = await mountHistory({});
+  const handle = mounted.handle;
+  try {
+    const list = findNodeByClass(handle, "dg-commit-list");
+    assert.ok(!hasClass(list, "dg-hide-author"), "without a measured width the default wide layout stands");
+    assert.ok(findNodeByClass(handle, "dg-history-tree"), "the tree is expanded by default");
+  } finally {
+    handle.unmount();
+  }
 });

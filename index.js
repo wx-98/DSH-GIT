@@ -372,6 +372,10 @@ async function handleLog(req, res) {
   const grep = url.searchParams.get("grep");
   const author = url.searchParams.get("author");
   const filterPath = url.searchParams.get("path");
+  // Optional date range added by "日志查询支持日期范围"; absent parameters stay
+  // undefined so lib/git.js can tell "no bound" from a malformed empty value.
+  const since = url.searchParams.get("since");
+  const until = url.searchParams.get("until");
   const page = await readLog(target.toplevel, {
     ref: ref === null ? "HEAD" : ref,
     limit: limit === null ? LOG_LIMIT_DEFAULT : limit,
@@ -379,6 +383,8 @@ async function handleLog(req, res) {
     grep: grep === null ? undefined : grep,
     author: author === null ? undefined : author,
     path: filterPath === null ? undefined : filterPath,
+    since: since === null ? undefined : since,
+    until: until === null ? undefined : until,
   });
   sendJson(res, 200, { ok: true, ref: page.ref, hasMore: page.hasMore, commits: page.commits });
 }

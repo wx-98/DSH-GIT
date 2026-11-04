@@ -20,7 +20,7 @@
 - **工作区变更**：按 VSCode 语义分成 **已暂存 / 变更 / 未跟踪 / 冲突** 四组，含状态字母（M/A/D/R/C/U/?）与重命名原路径
 - **逐文件 diff**：结构化 unified diff（hunk + 行号 + 增删着色），支持工作区 / 已暂存 / 未跟踪（合成）/ 指定提交四种视角；二进制文件有明确提示
 - **写操作**：暂存、取消暂存、放弃变更（二次确认）、填写提交信息并提交（Ctrl/Cmd+Enter）
-- **提交历史**：分页提交列表（短 sha / 主题 / 作者 / 相对时间 / refs 标签）、提交详情（完整 sha、正文、变更文件与增删行数）、点文件看该提交对该文件的 diff
+- **提交历史（IDEA 风格）**：左侧分支树（HEAD / 本地 / 远端，点击只改日志范围不改 HEAD）+ 右侧列式列表（图 / 主题+refs / 作者 / 日期 / 短哈希）；合并提交斜体弱化、HEAD 行强调；支持文本 / 作者 / 路径 / **日期范围**过滤和 ↑/↓/Enter 键盘导航；提交详情（完整 sha、正文、变更文件与增删行数）与逐文件 diff
 - **分支**：分支下拉 + 切换分支（`git checkout <branch>`）
 - **自动刷新**：面板可见时变更列表每 4s 轮询；所有写操作成功后立即重新拉取
 - 中文 / 英文文案，跟随宿主主题（深色 / 浅色）
@@ -74,7 +74,14 @@ pwsh -File .\tools\install-desktop.ps1 -RemoveLivePatch
 |---|---|---|
 | ![分支芯片](docs/ui-header-chip.png) | ![分支面板](docs/ui-branch-panel.png) | ![提交图](docs/ui-git-graph.png) |
 
-| 变更树（目录 + 行数） | hunk 级操作 |
+| 变更树（目录 + 行数） | hunk 级操作 | IDEA 风格历史 |
+|---|---|---|
+| ![变更树](docs/ui-changes-tree.png) | ![hunk](docs/ui-hunk-actions.png) | ![历史](docs/ui-history-idea.png) |
+
+| 上游显示（有上游） | 游离 HEAD |
+|---|---|
+| ![上游](docs/ui-upstream.png) | ![游离](docs/ui-detached-head.png) |
+
 |---|---|
 | ![变更树](docs/ui-changes-tree.png) | ![hunk](docs/ui-hunk-actions.png) |
 

@@ -165,6 +165,26 @@ export function apply(ctx) {
 - \`git log --no-color -z --format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%P%x1f%D%x1f%s -n <limit+1> --skip=<skip> <ref>\`
   （实现可自由选择分隔符，只要 JSON 形状一致；\`limit\` 上限 200）。
 - \`hasMore\` = 实际返回超过 limit 一条时为 true（多取一条再丢弃）。
+- **可选日期范围**（本变更新增，参数表与更多示例见「GET /git/log 的过滤参数」）：\`since\` / \`until\`，
+  格式 \`YYYY-MM-DD\` 或 \`YYYY-MM-DDTHH:mm(:ss)\`（\`T\` 也可写成空格），**按本地时区**解释并原样映射为
+  \`--since=<v>\` / \`--until=<v>\`；非法值（含空字符串）→ 400 \`bad-request\` 且**不执行 git**；
+  与 \`grep\` / \`author\` / \`path\` / \`limit\` / \`skip\` / \`ref\` 组合生效。
+
+\`\`\`jsonc
+// GET /git/log?root=D:/repo&since=2026-07-01&until=2026-07-31&limit=50
+{
+  "ok": true,
+  "ref": "HEAD",
+  "hasMore": false,
+  "commits": [
+    { "sha": "5f2c...", "shortSha": "5f2c1a9",
+      "author": "Wang Xiao", "email": "w@x.io", "time": 1782935999,
+      "subject": "feat: july work", "parents": ["a1b2..."], "refs": ["HEAD -> main"] }
+  ]
+}
+\`\`\`
+
+日期区间内没有提交时是 200 空页：\`{ "ok": true, "ref": "HEAD", "hasMore": false, "commits": [] }\`。
 
 #### GET /git/commit?root=&lt;abs&gt;&sha=&lt;完整或短 sha&gt;
 
@@ -499,5 +519,39 @@ Diff 视图在同一面板内**覆盖**列表区域（顶部「← 返回」按�
 | `grep` | `--grep=<v>` | 提交信息包含 |
 | `author` | `--author=<v>` | 作者匹配 |
 | `path` | `-- <v>` | 只列改动该路径的提交（仓库相对路径，越界 400） |
+| `since` | `--since=<v>` | 起始时间（**含**）；`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:mm(:ss)`，按本地时区解释 |
+| `until` | `--until=<v>` | 结束时间（**含**）；同一格式，客户端把「日期」归一化为当天 `T23:59:59` 再发送 |
 
-无匹配返回 `{ ok:true, commits: [], hasMore:false }`。
+**日期范围（`since` / `until`）**——对应 `git-host-api` 的「日志查询支持日期范围」：
+
+- 格式 MUST 匹配 `^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$`（`T` 也可写成空格）且 MUST 能被 `Date.parse` 解析；空字符串同样非法。
+- **非法值 → 400 `bad-request`，且不执行 git**（校验先于任何 git 进程）。
+- 合法的值**原样**映射为 `--since=<v>` / `--until=<v>`（与 `--skip`/`-n` 并列，顺序不影响语义），由 git **按本地时区**解释；宿主机不做归一化——「结束日期含当天」由客户端归一化成 `T23:59:59` 保证（见 design D5）。
+- 与 `grep` / `author` / `path` / `limit` / `skip` / `ref` 组合时同时生效；分页仍按「多取一条」判定 `hasMore`。
+- 无匹配 → 200，空列表：`{ "ok": true, "ref": "HEAD", "hasMore": false, "commits": [] }`。
+
+请求与响应示例：
+
+```jsonc
+// GET /git/log?root=D:/repo&since=2026-07-01&until=2026-07-31&author=Alice&limit=50
+{
+  "ok": true,
+  "ref": "HEAD",
+  "hasMore": false,
+  "commits": [
+    { "sha": "5f2c...", "shortSha": "5f2c1a9",
+      "author": "Alice", "email": "alice@x.io", "time": 1782935999,
+      "subject": "feat: july work", "parents": ["9f8e..."], "refs": [] }
+  ]
+}
+```
+
+```jsonc
+// 日期区间内没有任何提交：200 + 空页，hasMore 为 false
+{ "ok": true, "ref": "HEAD", "hasMore": false, "commits": [] }
+```
+
+```jsonc
+// GET /git/log?root=D:/repo&since=not-a-date
+{ "ok": false, "code": "bad-request", "message": "Invalid \"since\" date: \"not-a-date\"" }
+```
