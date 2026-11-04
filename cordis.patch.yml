@@ -1,0 +1,6 @@
+# Git bundle patch: insert the plugin row (Host half + browser half) into the
+# profile's loader tree. The Host half lives in index.js; the browser half is
+# discovered from this package's `dsh.client` declaration.
+- insert:
+    - id: git
+      name: 'dsh-git'

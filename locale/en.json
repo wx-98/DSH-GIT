@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git",
+    "description": "Shows the current branch and change count in the session header; opens a right-side drawer with working-tree changes (stage/unstage/discard/commit) plus commit history and per-file diffs."
+  }
+}

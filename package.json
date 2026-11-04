@@ -1,0 +1,47 @@
+{
+  "name": "dsh-git",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Git source-control plugin for the DeepSeek Harness Web GUI: a VSCode-like right-sidebar panel with branch status, working-tree changes (stage/unstage/discard/commit) and commit history with per-file diffs.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib/git.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-shortcuts"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/host.test.js test/client.test.js"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "git",
+    "source-control"
+  ]
+}
