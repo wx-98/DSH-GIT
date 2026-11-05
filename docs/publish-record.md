@@ -60,11 +60,13 @@ npm view dsh-git-control version dist.tarball repository.url license
 
 https://github.com/wx-98/DSH-GIT/releases/tag/v0.4.0
 
-## 5. awesome-dsh-plugin 投稿（已备好，待仓库满 1 天）
+## 5. awesome-dsh-plugin 投稿（PR 已开，等待维护者合并）
 
 - 规则：PR 只新增 `data/plugins/<owner>__<repo>.yml`，不手改生成的 README；仓库需声明 `dsh.bundle`、带 `dsh-plugin` topic、**满 1 天**。
 - 已 fork：`wx-98/awesome-dsh-plugin`；分支 `add-dsh-git`；文件 `data/plugins/wx-98__DSH-GIT.yml`（`category: git`）。
-- 门禁：目标仓库创建于 `2026-11-04T13:01:11Z`，**最早 2026-11-05T13:01Z（北京时间 21:01）** 才能开 PR。
+- 门禁：目标仓库创建于 `2026-11-04T13:01:11Z`；PR 开于 `2026-11-05T13:12Z`（满 24h 后）。
+- **PR**：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/12342（1 个文件、+7 行；CI 检查 `check` 运行中）
+- 条目含店铺图标：`assets/icon-180.png`（180×180 PNG，由 `icon.svg` 渲染），通过 `icon:` 字段引用 raw.githubusercontent。
 
 ## 6. dshplugin.world 提交（已完成）
 

@@ -268,4 +268,4 @@ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."   # 对从 np
 | npm 安装后的真实实例自检 | 26/26 通过 |
 | dshplugin.world 收录 issue | https://github.com/wx-98/DSH-GIT/issues/1 |
 | 官方 discussions（Show Your Plugins!） | https://github.com/deepseek-ai/deepseek-harness/discussions/12165 |
-| awesome-dsh-plugin PR | 待仓库满 1 天（2026-11-05T13:01Z 之后） |
+| awesome-dsh-plugin PR | https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/12342 （1 文件 +7 行，等待合并） |
