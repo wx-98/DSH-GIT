@@ -24,7 +24,7 @@
 
 - [x] 4.1 检查时间门禁与前置条件：仓库 `created_at` 距今 ≥ 1 天、已带 `dsh-plugin` topic、`package.json` 有 `dsh.bundle`；未满足则记录并等待（不提前开 PR）。验证：三项逐一用 API/文件核对并记录。
 - [x] 4.2 fork upstream、在 fork 上建分支并新增 `data/plugins/wx-98__DSH-GIT.yml`（`category: git`，`description.en` 必填、`zh` 可选、不手改生成的 README）；验证：YAML 能解析、`url`/文件名与仓库完全一致。
-- [ ] 4.3 向 upstream `main` 开 PR，标题与正文说明「新增一个插件数据文件」，并附仓库 URL、类别（ui/git）、安装命令；验证：PR 创建成功并返回 URL，CI（若有）通过或指出需修复项。
+- [x] 4.3 向 upstream `main` 开 PR，标题与正文说明「新增一个插件数据文件」，并附仓库 URL、类别（ui/git）、安装命令；验证：PR 创建成功并返回 URL，CI（若有）通过或指出需修复项。
 
 ## 5. dshplugin.world 提交
 
@@ -34,8 +34,8 @@
 
 ## 6. 发布验收与文档
 
-- [ ] 6.1 汇总一次可复现的发布验收：`git ls-remote` 的 main/tag、GitHub topics、`npm view` 三个字段、awesome PR URL、registry issue URL 全部记录到 `docs/verification.md` 新的「发布记录」小节。验证：小节中的每条命令都能被重跑复核。
-- [ ] 6.2 在 README 顶部加 awesome 徽章（`[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)`），并在安装块下方注明「npm 包名 / GitHub 仓库 / 注册表收录状态」；验证：徽章链接可达，README 渲染无坏链。
+- [x] 6.1 汇总一次可复现的发布验收：`git ls-remote` 的 main/tag、GitHub topics、`npm view` 三个字段、awesome PR URL、registry issue URL 全部记录到 `docs/verification.md` 新的「发布记录」小节。验证：小节中的每条命令都能被重跑复核。
+- [x] 6.2 在 README 顶部加 awesome 徽章（`[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)`），并在安装块下方注明「npm 包名 / GitHub 仓库 / 注册表收录状态」；验证：徽章链接可达，README 渲染无坏链。
 - [x] 6.3 跑完全量测试与 `openspec validate publish-dsh-git`，确认改名/元数据改动没有破坏插件行为；验证：`node --test test/host.test.js test/client.test.js test/graph-lanes.test.js` 全绿且校验通过。
 
 ## Workflow follow-up
