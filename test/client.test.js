@@ -1574,6 +1574,18 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
 
+test("the branch popover joins the top layer so ancestors cannot clip it", () => {
+  // A title-bar ancestor clips its overflow; the Popover API is the only way to
+  // escape that while keeping the element inside the React tree.
+  assert.ok(SOURCE.includes('popover: "manual"'), "the popover element must be a manual popover");
+  assert.ok(SOURCE.includes("showPopover"), "opening must call showPopover");
+  assert.ok(SOURCE.includes("hidePopover"), "closing must call hidePopover");
+  assert.ok(
+    INTERNALS.CSS_TEXT.includes(".dg-pop[popover]{inset:auto;margin:0"),
+    "the UA centring offsets must be cleared",
+  );
+});
+
 test("popoverFixedStyle anchors the popover below the chip as a fixed element", () => {
   // The desktop title-bar band clips its overflow, so an absolutely positioned
   // popover is invisible there; a fixed one escapes every clipper.
@@ -1582,6 +1594,10 @@ test("popoverFixedStyle anchors the popover below the chip as a fixed element", 
     ["position", "fixed"],
     ["top", "50px"],
     ["right", "100px"],
+    // a [popover] is centred by the UA stylesheet, so its offsets must be cleared
+    ["left", "auto"],
+    ["bottom", "auto"],
+    ["margin", "0"],
   ]);
   // A missing or unusable rect falls back to the CSS positioning.
   assert.equal(INTERNALS.popoverFixedStyle(null, 1000), null);

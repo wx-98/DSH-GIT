@@ -333,3 +333,32 @@ Electron 的拖拽区不派发鼠标事件；芯片所在位置正好落在这�
 
 - 单元测试 `popoverFixedStyle anchors the popover below the chip as a fixed element`（正常矩形、缺省矩形、右侧越界钳制）；
 - 真实实例（0.4.3）：点击芯片 → `aria-expanded=true`、弹层 `position: fixed`、矩形 `(x=200, y=43, 340×330)`、完全在视口内、内容为「当前分支 / main / origin/main / 切换分支 …」。
+
+## 14. 弹层被标题栏裁剪（0.4.4）
+
+现象：0.4.3（`position: fixed` 锚定芯片）在桌面端依旧只露出一条很窄的浅色条——弹层渲染了，但被裁掉。
+
+根因：芯片位于桌面外壳的标题栏结构内。浏览器实测其祖先链为
+
+```
+.dg-chip-root -> div -> .headerActions -> .titleCluster -> .titleRow -> div
+```
+
+标题栏这一组祖先会裁剪溢出，并且创建了 fixed 定位的包含块（transform 类），所以 `position: fixed` 也无法逃出，弹层被裁成一条。
+
+修正：把弹层放进**顶层（top layer）**——`<div popover="manual">` + `showPopover()` / `hidePopover()`。顶层元素不受任何祖先 `overflow` / stacking context / transform 影响，同时元素仍在 React 树内（不需要 portal、不需要 react-dom）。UA 会把 `[popover]` 居中（`inset:0;margin:auto`），因此样式里清掉这些偏移并保留锚定坐标。
+
+```css
+.dg-pop[popover]{inset:auto;margin:0;padding:8px}
+```
+
+验证（真实实例 0.4.4）：
+
+| 检查 | 结果 |
+|---|---|
+| 点击芯片 | `aria-expanded=true`，弹层存在且 `matches(':popover-open') === true` |
+| 是否在顶层 | `popover` 属性为 `manual`，`position: fixed`，矩形 `(200,43) 340×330`，完全可见 |
+| 再点一次 | 关闭（节点移除，`aria-expanded=false`） |
+| 再次打开 | 正常重开 |
+| Escape | 关闭 |
+| 点击外部 | 关闭 |

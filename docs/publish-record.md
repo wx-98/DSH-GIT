@@ -36,7 +36,7 @@ $ pnpm add github:wx-98/DSH-GIT      # 临时目录
 | 项 | 值 |
 |---|---|
 | 包名 | `dsh-git-control`（无 scope；`dsh-git` 等近似名已被占） |
-| 版本 | `0.4.3`（当前）；`0.4.0` 为首发版本 |
+| 版本 | `0.4.4`（当前）；`0.4.0` 为首发版本 |
 | 发布源 | `https://registry.npmjs.org/`（本机默认源是内网 `registry.npm.wps.cn`，发布时显式指定公共源） |
 | tarball | https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.0.tgz |
 | 账号 | `moonfiremoon` |
@@ -49,6 +49,7 @@ $ pnpm add github:wx-98/DSH-GIT      # 临时目录
 | `0.4.1` | 修正等宽字体回退：`Cascadia Mono` / `Cascadia Code` / `Consolas` 优先于 `ui-monospace`；修复中文 Windows 上等宽文本回落成 NSimSun（新宋体）的问题 |
 | `0.4.2` | 修复桌面端顶部 Git 分支芯片点击无反应：芯片与弹层加 `-webkit-app-region:no-drag`，退出窗口顶部拖拽区（Electron 拖拽区会吞掉点击） |
 | `0.4.3` | 修复桌面端芯片弹层「点了不显示」：弹层改为锚定芯片矩形的 `position:fixed`，脱离标题栏带的溢出裁剪；`z-index` 提到 1200 |
+| `0.4.4` | 最终修复弹层被标题栏裁剪：改用顶层（Popover API，`popover="manual"` + `showPopover()`），不受任何祖先裁剪/层叠上下文影响 |
 
 `npm view dsh-git-control version` → `0.4.1`；tarball `https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.1.tgz`。
 

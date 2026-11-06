@@ -337,6 +337,11 @@ window.__ModuleLoader__.load({
         position: "fixed",
         top: Math.round(anchor.bottom) + 6 + "px",
         right: right + "px",
+        // The UA stylesheet centres [popover] with inset:0 + margin:auto; the
+        // chip anchors it instead, so those offsets must be cleared.
+        left: "auto",
+        bottom: "auto",
+        margin: "0",
       };
     }
 
@@ -3143,8 +3148,34 @@ function computeLanes(commits, options = {}) {
         confirmDialog);
 
       const popoverStyle = props.popoverStyle !== null && typeof props.popoverStyle === "object" ? props.popoverStyle : null;
+      // A title-bar ancestor renders the popover's clipping box, so the element
+      // joins the top layer: a [popover] escapes every ancestor's overflow and
+      // stacking context while staying inside the React tree (no portal needed).
+      // Without the Popover API the CSS positioning is the fallback.
+      const popRef = React.useRef(null);
+      React.useEffect(function () {
+        const node = popRef.current;
+        if (node === null || typeof node.showPopover !== "function") return undefined;
+        const isOpen = function () {
+          return typeof node.matches === "function" && node.matches(":popover-open");
+        };
+        try {
+          if (!isOpen()) node.showPopover();
+        } catch (error) {
+          return undefined;
+        }
+        return function () {
+          try {
+            if (isOpen()) node.hidePopover();
+          } catch (error) {
+            /* the element is already leaving the document */
+          }
+        };
+      }, []);
       return h("div", {
         className: "dg-pop dg-branch-panel" + (popoverStyle === null ? "" : " dg-pop-fixed"),
+        popover: "manual",
+        ref: popRef,
         role: "dialog",
         "aria-label": t("chip.popTitle"),
         style: popoverStyle,
@@ -3768,6 +3799,7 @@ function computeLanes(commits, options = {}) {
       // through, so the panel uses the opaque theme layer instead.
       ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:1200;-webkit-app-region:no-drag;app-region:no-drag;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
       ".dg-pop-fixed{position:fixed;top:auto;right:auto;left:auto;z-index:1200}",
+      ".dg-pop[popover]{inset:auto;margin:0;padding:8px}",
       ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:12px;line-height:18px;font-weight:600;font-variant-numeric:tabular-nums}",
       ".dg-pop-upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin-left:auto}",
       ".dg-pop-group-title{display:flex;align-items:center;justify-content:space-between;padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;letter-spacing:.02em}",
