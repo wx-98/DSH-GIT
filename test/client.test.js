@@ -1574,6 +1574,27 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
 
+test("monospace text asks for real code fonts before the generic keyword", () => {
+  const rules = INTERNALS.CSS_TEXT.split(NL).filter((line) => line.includes("font-family:var(--dsh-font-mono"));
+  assert.ok(rules.length > 0, "at least one rule must use the mono stack");
+  for (const rule of rules) {
+    // Chrome on zh-CN Windows resolves ui-monospace/monospace to NSimSun, so the
+    // stack must name platform code fonts first and keep the host variable on top.
+    assert.ok(rule.includes("var(--dsh-font-mono,"), "the host variable stays first: " + rule);
+    assert.ok(rule.includes("Consolas"), "Consolas is the Windows fallback: " + rule);
+    assert.ok(rule.includes("'Cascadia Mono'"), "Cascadia Mono is preferred on Windows: " + rule);
+    // The declaration runs until the next ; or } inside the same rule line.
+    const rest = rule.slice(rule.indexOf("var(--dsh-font-mono,"));
+    const end = rest.search(/[;}]/);
+    const stack = end === -1 ? rest : rest.slice(0, end);
+    assert.ok(
+      stack.indexOf("Consolas") < stack.indexOf("ui-monospace"),
+      "named code fonts must come before ui-monospace: " + rule,
+    );
+    assert.ok(stack.trim().endsWith("monospace)"), "the generic keyword stays last: " + stack);
+  }
+});
+
 test("the branch chip inherits the host font instead of the monospace stack", () => {
   const lines = INTERNALS.CSS_TEXT.split(NL);
   function ruleFor(selector) {
