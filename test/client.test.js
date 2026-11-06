@@ -1574,6 +1574,25 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
 
+test("the header chip and its popover opt out of the window drag region", () => {
+  const lines = INTERNALS.CSS_TEXT.split(NL);
+  function ruleFor(selector) {
+    return lines.find((line) => line.indexOf(selector + "{") === 0);
+  }
+  // The desktop shell paints a -webkit-app-region: drag strip across the top of
+  // the window; a drag region swallows clicks, so anything interactive that lives
+  // up there must declare no-drag or its onClick never runs.
+  for (const selector of [".dg-chip-root", ".dg-pop"]) {
+    const rule = ruleFor(selector);
+    assert.ok(rule, selector + " must be styled");
+    assert.ok(
+      rule.includes("-webkit-app-region:no-drag"),
+      selector + " must opt out of the window drag region: " + rule,
+    );
+    assert.ok(rule.includes("app-region:no-drag"), selector + " must keep the unprefixed property too: " + rule);
+  }
+});
+
 test("monospace text asks for real code fonts before the generic keyword", () => {
   const rules = INTERNALS.CSS_TEXT.split(NL).filter((line) => line.includes("font-family:var(--dsh-font-mono"));
   assert.ok(rules.length > 0, "at least one rule must use the mono stack");

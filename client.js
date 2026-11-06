@@ -3696,7 +3696,11 @@ function computeLanes(commits, options = {}) {
       ".dg-file-table-row:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:-1px}",
       ".dg-numstat{flex:none;display:inline-flex;gap:5px;font-size:11px;font-variant-numeric:tabular-nums}",
       // Session-header branch chip (VSCode status-bar idiom).
-      ".dg-chip-root{position:relative;display:inline-flex;align-items:center}",
+      // The desktop shell paints a -webkit-app-region: drag strip across the top of
+      // the window; a drag region swallows clicks, and this chip lives inside that
+      // band, so it opts out with no-drag (as the shell does for its own top-bar
+      // controls). Without it the chip renders but onClick never runs.
+      ".dg-chip-root{position:relative;display:inline-flex;align-items:center;-webkit-app-region:no-drag;app-region:no-drag}",
       ".dg-chip{display:inline-flex;align-items:center;gap:5px;min-height:24px;padding:1px 7px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary,#57606a);font:inherit;font-size:12px;line-height:18px;cursor:pointer;max-width:220px}",
       ".dg-chip:hover{background:var(--dsw-alias-fill-l1,rgba(175,184,193,.14));color:var(--dsw-alias-label-primary,#1f2328)}",
       ".dg-chip:focus-visible{outline:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.24));outline-offset:0}",
@@ -3713,7 +3717,7 @@ function computeLanes(commits, options = {}) {
       // `--dsw-specific-menu` is a translucent menu layer (≈58% alpha) meant to be
       // used together with a backdrop blur; on its own the content behind bleeds
       // through, so the panel uses the opaque theme layer instead.
-      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:60;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
+      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:120;-webkit-app-region:no-drag;app-region:no-drag;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
       ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:12px;line-height:18px;font-weight:600;font-variant-numeric:tabular-nums}",
       ".dg-pop-upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin-left:auto}",
       ".dg-pop-group-title{display:flex;align-items:center;justify-content:space-between;padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;letter-spacing:.02em}",
