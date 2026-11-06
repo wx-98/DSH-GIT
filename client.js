@@ -1740,7 +1740,12 @@ window.__ModuleLoader__.load({
     function HistoryPane(rawProps) {
       const props = rawProps || {};
       const t = typeof props.t === "function" ? props.t : defaultTranslate;
-      const branchesRef = React.useState(null);
+      // The chip prefetches the roster, so a freshly opened panel renders in full
+      // instead of filling in after the request resolves.
+      const seededBranches = props.initialBranches !== null && typeof props.initialBranches === "object" ? props.initialBranches : null;
+      const branchesRef = React.useState(function () {
+        return seededBranches;
+      });
       const branches = branchesRef[0];
       const setBranches = branchesRef[1];
       const branchErrorRef = React.useState(null);
@@ -3153,7 +3158,9 @@ function computeLanes(commits, options = {}) {
       // stacking context while staying inside the React tree (no portal needed).
       // Without the Popover API the CSS positioning is the fallback.
       const popRef = React.useRef(null);
-      React.useEffect(function () {
+      // useLayoutEffect, not useEffect: [popover] is display:none until showPopover()
+      // runs, so doing it after paint makes the panel flash in a frame late.
+      React.useLayoutEffect(function () {
         const node = popRef.current;
         if (node === null || typeof node.showPopover !== "function") return undefined;
         const isOpen = function () {
@@ -3249,6 +3256,27 @@ function computeLanes(commits, options = {}) {
         load();
       }, [load]);
 
+      // Warm the roster while the chip is idle so the popover opens populated
+      // instead of filling in after its own request resolves.
+      const rosterRef = React.useRef(null);
+      const rosterTick = React.useState(0);
+      const bumpRoster = rosterTick[1];
+      React.useEffect(function () {
+        if (root === null) return undefined;
+        let cancelled = false;
+        api.branches(root).then(function (payload) {
+          if (cancelled) return;
+          rosterRef.current = payload !== null && typeof payload === "object" ? payload : null;
+          bumpRoster(function (tick) { return tick + 1; });
+        }, function () {
+          if (cancelled) return;
+          rosterRef.current = null;
+        });
+        return function () {
+          cancelled = true;
+        };
+      }, [root, load]);
+
       React.useEffect(function () {
         if (root === null) return undefined;
         const timer = setInterval(function () {
@@ -3268,11 +3296,13 @@ function computeLanes(commits, options = {}) {
           if (node !== null && typeof node.contains === "function" && node.contains(event.target)) return;
           setOpen(false);
         };
+        // Only viewport resizes move the anchor. A scroll listener here would also
+        // catch the popover's own scrolling (it is height-capped), closing it on
+        // the first wheel gesture.
         const onViewport = function () {
           setOpen(false);
         };
         window.addEventListener("resize", onViewport);
-        window.addEventListener("scroll", onViewport, true);
         const onKey = function (event) {
           if (event.key === "Escape") setOpen(false);
         };
@@ -3282,7 +3312,6 @@ function computeLanes(commits, options = {}) {
           document.removeEventListener("pointerdown", onPointer, true);
           document.removeEventListener("keydown", onKey);
           window.removeEventListener("resize", onViewport);
-          window.removeEventListener("scroll", onViewport, true);
         };
       }, [open]);
 
@@ -3312,6 +3341,7 @@ function computeLanes(commits, options = {}) {
           status: status,
           t: t,
           onChanged: load,
+          initialBranches: rosterRef.current,
           popoverStyle: popoverFixedStyle(anchor, typeof window === "undefined" ? 0 : window.innerWidth),
         })
         : null;

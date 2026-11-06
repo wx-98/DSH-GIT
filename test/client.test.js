@@ -8,7 +8,7 @@
 //      react-dom pair can be resolved (the installed profile ships react 18 with
 //      react-dom 19, which cannot server-render, so that path currently skips);
 //   2. a dependency-free harness: the bundle is loaded a second time with a tiny
-//      React shim (createElement / Fragment / useState / useEffect / useRef) and the
+//      React shim (createElement / Fragment / useState / useEffect / useLayoutEffect / useRef) and the
 //      element tree is serialised directly. This always runs and exercises the real
 //      component render paths.
 import assert from "node:assert/strict";
@@ -140,6 +140,9 @@ function createShimReact() {
       return { current: current === undefined ? null : current };
     },
     useEffect() {},
+    // Real React runs layout effects before paint; the serialising harness only
+    // needs the hook to exist so components can call it.
+    useLayoutEffect() {},
     useCallback(fn) {
       return fn;
     },
@@ -1153,6 +1156,14 @@ function createHookRuntime() {
       if (!(index in ctx.refs)) ctx.refs[index] = { current: initial === undefined ? null : initial };
       return ctx.refs[index];
     },
+    // The serialising harness treats layout effects like passive ones: it only
+    // needs the hook to exist and to run after the render pass.
+    useLayoutEffect(create, deps) {
+      const ctx = runtime.ctx;
+      const index = ctx.cursor;
+      ctx.cursor += 1;
+      ctx.effects.push({ index: index, create: create, deps: Array.isArray(deps) ? deps.slice() : null });
+    },
     useEffect(create, deps) {
       const ctx = runtime.ctx;
       const index = ctx.cursor;
@@ -1573,6 +1584,17 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // ---------------------------------------------------------------------------
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
+
+test("the popover opens before paint and survives its own scrollbar", () => {
+  // [popover] is display:none until showPopover() runs, so a passive effect makes
+  // the panel flash in a frame late; the layout effect runs before paint.
+  assert.ok(SOURCE.includes("React.useLayoutEffect"), "showPopover must run in a layout effect");
+  // A capture-phase scroll listener on window also fires for the popover's own
+  // scrolling (it is height-capped), which closed the panel on the first wheel tick.
+  assert.ok(!SOURCE.includes('addEventListener("scroll"'), "no scroll listener may close the popover");
+  // The roster is prefetched so the panel renders populated on the first frame.
+  assert.ok(SOURCE.includes("initialBranches"), "the chip must hand its prefetched roster to the panel");
+});
 
 test("the branch popover joins the top layer so ancestors cannot clip it", () => {
   // A title-bar ancestor clips its overflow; the Popover API is the only way to
