@@ -269,3 +269,22 @@ node tools/verify-installed.mjs "http://127.0.0.1:PORT/?token=..."   # 对从 np
 | dshplugin.world 收录 issue | https://github.com/wx-98/DSH-GIT/issues/1 |
 | 官方 discussions（Show Your Plugins!） | https://github.com/deepseek-ai/deepseek-harness/discussions/12165 |
 | awesome-dsh-plugin 收录 | PR https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/12342 **已合并**，条目已进入索引 |
+
+## 11. 等宽字体回退（0.4.1）
+
+问题：插件声明 `font-family: var(--dsh-font-mono, ui-monospace, monospace)`，但当前 DSH 宿主**没有定义** `--dsh-font-mono`，于是退到泛型关键字；在中文 Windows 上 Chrome 把 `ui-monospace`/`monospace` 解析成 **NSimSun（新宋体）**，等宽内容（分支名、短 SHA、diff/hunk）观感与代码字体不符。
+
+修正：把命名等宽字体排在泛型关键字之前，并仍以宿主变量优先：
+
+```css
+font-family: var(--dsh-font-mono,'Cascadia Mono','Cascadia Code',Consolas,'SFMono-Regular',Menlo,ui-monospace,monospace)
+```
+
+验证（headless Chrome + CDP `CSS.getPlatformFontsForNode`，对**从 npm 安装的 0.4.1** 实例）：
+
+| 内容 | 修正前实际字体 | 修正后实际字体 |
+|---|---|---|
+| 等宽（分支名 / 短 SHA / diff） | `NSimSun` | **`Cascadia Mono`** |
+| 界面文字（提交主题等） | `Segoe UI` | `Segoe UI`（继承宿主 `--dsw-font-family`，未变） |
+
+同时新增回归测试 `monospace text asks for real code fonts before the generic keyword`：断言每条 mono 规则都以 `var(--dsh-font-mono,` 开头、含 `Consolas` 与 `'Cascadia Mono'`、命名字体位于 `ui-monospace` 之前、且以泛型 `monospace)` 收尾。

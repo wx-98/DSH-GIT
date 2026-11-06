@@ -36,10 +36,19 @@ $ pnpm add github:wx-98/DSH-GIT      # 临时目录
 | 项 | 值 |
 |---|---|
 | 包名 | `dsh-git-control`（无 scope；`dsh-git` 等近似名已被占） |
-| 版本 | `0.4.0`（首发） |
+| 版本 | `0.4.1`（当前）；`0.4.0` 为首发版本 |
 | 发布源 | `https://registry.npmjs.org/`（本机默认源是内网 `registry.npm.wps.cn`，发布时显式指定公共源） |
 | tarball | https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.0.tgz |
 | 账号 | `moonfiremoon` |
+
+### npm 版本历史
+
+| 版本 | 变更 |
+|---|---|
+| `0.4.0` | 首发 |
+| `0.4.1` | 修正等宽字体回退：`Cascadia Mono` / `Cascadia Code` / `Consolas` 优先于 `ui-monospace`；修复中文 Windows 上等宽文本回落成 NSimSun（新宋体）的问题 |
+
+`npm view dsh-git-control version` → `0.4.1`；tarball `https://registry.npmjs.org/dsh-git-control/-/dsh-git-control-0.4.1.tgz`。
 
 复核：
 
