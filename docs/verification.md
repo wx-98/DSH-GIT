@@ -316,3 +316,20 @@ Electron 的拖拽区不派发鼠标事件；芯片所在位置正好落在这�
 
 - 回归测试 `the header chip and its popover opt out of the window drag region`（断言两条规则都带 `no-drag`）；
 - 0.4.2 在真实实例中点击芯片 → `aria-expanded=true`、弹层出现且内容为「当前分支 / main / origin/main / 切换分支 …」。
+
+## 13. 芯片弹层在桌面端不显示（0.4.3）
+
+现象：0.4.2 之后点击顶部 `main` 胶囊，事件能进来了，但弹层内容看不见。
+
+根因：芯片位于桌面窗口的标题栏带内，该带的祖先容器会裁剪溢出内容（`overflow` 裁剪 + 顶部拖拽条覆盖层），弹层用的是 `position: absolute`，于是被裁到不可见区域；网页版没有这类祖先，所以照常显示。
+
+修正：弹层改为**锚定到芯片矩形**的 `position: fixed`（`popoverFixedStyle(anchor, viewportWidth)` 纯函数），从而脱离所有祖先裁剪；同时 `z-index` 提到 1200，高于顶栏覆盖层；视口 `resize`/`scroll` 时自动收起，避免浮层与芯片脱离。
+
+```css
+.dg-pop-fixed{position:fixed;top:auto;right:auto;left:auto;z-index:1200}
+```
+
+验证：
+
+- 单元测试 `popoverFixedStyle anchors the popover below the chip as a fixed element`（正常矩形、缺省矩形、右侧越界钳制）；
+- 真实实例（0.4.3）：点击芯片 → `aria-expanded=true`、弹层 `position: fixed`、矩形 `(x=200, y=43, 340×330)`、完全在视口内、内容为「当前分支 / main / origin/main / 切换分支 …」。

@@ -316,6 +316,30 @@ window.__ModuleLoader__.load({
      * @param {string} currentName current branch name
      * @returns {{ kind: "detached"|"upstream"|"none", name: string }}
      */
+    /**
+     * Fixed-position style for the header-chip popover.
+     *
+     * The chip sits inside the desktop window's title-bar band, and the ancestors
+     * there clip their overflow; an absolutely positioned popover is then cut off,
+     * which reads as "clicking does nothing". Anchoring to the chip's rect with
+     * `position: fixed` escapes every clipping ancestor.
+     *
+     * @param {{ top: number, bottom: number, right: number } | null} anchor
+     * @param {number} viewportWidth
+     * @returns {{ position: string, top: string, right: string } | null}
+     */
+    function popoverFixedStyle(anchor, viewportWidth) {
+      if (anchor === null || typeof anchor !== "object") return null;
+      if (!Number.isFinite(anchor.bottom) || !Number.isFinite(anchor.right)) return null;
+      const width = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 0;
+      const right = width > 0 ? Math.max(8, Math.round(width - anchor.right)) : 8;
+      return {
+        position: "fixed",
+        top: Math.round(anchor.bottom) + 6 + "px",
+        right: right + "px",
+      };
+    }
+
     function resolveUpstream(branch, branches, currentName) {
       if (branch !== null && typeof branch === "object" && branch.detached === true) {
         return { kind: "detached", name: "" };
@@ -3118,7 +3142,13 @@ function computeLanes(commits, options = {}) {
           }, t("branch.create.button"))),
         confirmDialog);
 
-      return h("div", { className: "dg-pop dg-branch-panel", role: "dialog", "aria-label": t("chip.popTitle") },
+      const popoverStyle = props.popoverStyle !== null && typeof props.popoverStyle === "object" ? props.popoverStyle : null;
+      return h("div", {
+        className: "dg-pop dg-branch-panel" + (popoverStyle === null ? "" : " dg-pop-fixed"),
+        role: "dialog",
+        "aria-label": t("chip.popTitle"),
+        style: popoverStyle,
+      },
         errorBar,
         notice === null ? null : h("div", { className: "dg-notice dg-notice-success", role: "status" }, notice),
         currentSection,
@@ -3152,9 +3182,12 @@ function computeLanes(commits, options = {}) {
       const status = statusState[0];
       const setStatus = statusState[1];
       const openState = React.useState(false);
+      const anchorState = React.useState(null);
       const open = openState[0];
       const setOpen = openState[1];
+      const setAnchor = anchorState[1];
       const rootRef = React.useRef(null);
+      const anchor = anchorState[0];
       const mountedRef = React.useRef(false);
       const seqRef = React.useRef(0);
 
@@ -3204,6 +3237,11 @@ function computeLanes(commits, options = {}) {
           if (node !== null && typeof node.contains === "function" && node.contains(event.target)) return;
           setOpen(false);
         };
+        const onViewport = function () {
+          setOpen(false);
+        };
+        window.addEventListener("resize", onViewport);
+        window.addEventListener("scroll", onViewport, true);
         const onKey = function (event) {
           if (event.key === "Escape") setOpen(false);
         };
@@ -3212,6 +3250,8 @@ function computeLanes(commits, options = {}) {
         return function () {
           document.removeEventListener("pointerdown", onPointer, true);
           document.removeEventListener("keydown", onKey);
+          window.removeEventListener("resize", onViewport);
+          window.removeEventListener("scroll", onViewport, true);
         };
       }, [open]);
 
@@ -3241,6 +3281,7 @@ function computeLanes(commits, options = {}) {
           status: status,
           t: t,
           onChanged: load,
+          popoverStyle: popoverFixedStyle(anchor, typeof window === "undefined" ? 0 : window.innerWidth),
         })
         : null;
 
@@ -3252,7 +3293,15 @@ function computeLanes(commits, options = {}) {
           "aria-expanded": open ? "true" : "false",
           title: ariaLabel,
           onClick: function () {
-            setOpen(!open);
+            if (open) {
+              setOpen(false);
+              return;
+            }
+            const node = rootRef.current;
+            if (node !== null && typeof node.getBoundingClientRect === "function") {
+              setAnchor(node.getBoundingClientRect());
+            }
+            setOpen(true);
           },
         },
           h("span", { className: "dg-chip-dot" + (changeCount > 0 ? " dg-chip-dot-dirty" : "") }),
@@ -3717,7 +3766,8 @@ function computeLanes(commits, options = {}) {
       // `--dsw-specific-menu` is a translucent menu layer (≈58% alpha) meant to be
       // used together with a backdrop blur; on its own the content behind bleeds
       // through, so the panel uses the opaque theme layer instead.
-      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:120;-webkit-app-region:no-drag;app-region:no-drag;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
+      ".dg-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:1200;-webkit-app-region:no-drag;app-region:no-drag;box-sizing:border-box;width:340px;max-width:min(440px,82vw);max-height:min(460px,70vh);overflow:auto;padding:8px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));box-shadow:var(--dsw-elevation-prominent,0 8px 24px rgba(0,0,0,.2));color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:18px}",
+      ".dg-pop-fixed{position:fixed;top:auto;right:auto;left:auto;z-index:1200}",
       ".dg-pop-branch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit;font-size:12px;line-height:18px;font-weight:600;font-variant-numeric:tabular-nums}",
       ".dg-pop-upstream{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin-left:auto}",
       ".dg-pop-group-title{display:flex;align-items:center;justify-content:space-between;padding:2px 4px;color:var(--dsw-alias-label-tertiary,#6e7781);font-size:11px;letter-spacing:.02em}",
@@ -4293,6 +4343,7 @@ function computeLanes(commits, options = {}) {
         CommitGraph: CommitGraph,
         computeLanes: computeLanes,
         resolveUpstream: resolveUpstream,
+        popoverFixedStyle: popoverFixedStyle,
         LANE_COLORS: LANE_COLORS,
         GRAPH_HEAD_COLOR: GRAPH_HEAD_COLOR,
         GRAPH_MAX_LANES: GRAPH_MAX_LANES,

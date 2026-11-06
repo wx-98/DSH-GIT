@@ -1574,6 +1574,23 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
 
+test("popoverFixedStyle anchors the popover below the chip as a fixed element", () => {
+  // The desktop title-bar band clips its overflow, so an absolutely positioned
+  // popover is invisible there; a fixed one escapes every clipper.
+  const style = INTERNALS.popoverFixedStyle({ top: 20, bottom: 44, right: 900, left: 820 }, 1000);
+  assert.deepEqual(Array.from(Object.entries(style)), [
+    ["position", "fixed"],
+    ["top", "50px"],
+    ["right", "100px"],
+  ]);
+  // A missing or unusable rect falls back to the CSS positioning.
+  assert.equal(INTERNALS.popoverFixedStyle(null, 1000), null);
+  assert.equal(INTERNALS.popoverFixedStyle({}, 1000), null);
+  // Never push the right edge off-screen, even with an unknown viewport.
+  const clamped = INTERNALS.popoverFixedStyle({ bottom: 44, right: 5000 }, 0);
+  assert.equal(clamped.right, "8px");
+});
+
 test("the header chip and its popover opt out of the window drag region", () => {
   const lines = INTERNALS.CSS_TEXT.split(NL);
   function ruleFor(selector) {
