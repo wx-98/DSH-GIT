@@ -35,7 +35,7 @@
 - npm：**`dsh-git-control@0.4.0`** — https://www.npmjs.com/package/dsh-git-control
 - GitHub：https://github.com/wx-98/DSH-GIT （tag `v0.4.0`，MIT）
 - dshplugin.world 收录申请：https://github.com/wx-98/DSH-GIT/issues/1
-- awesome-dsh-plugin：PR 已提交 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/12342
+- awesome-dsh-plugin：**已收录**（PR https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/12342 已合并）
 ## 安装
 
 > 插件类型：**Cordis 插件 bundle**（Host 半边 + 浏览器半边，不是皮肤 / TUI / 桌面客户端）。
