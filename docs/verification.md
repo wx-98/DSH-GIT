@@ -288,3 +288,31 @@ font-family: var(--dsh-font-mono,'Cascadia Mono','Cascadia Code',Consolas,'SFMon
 | 界面文字（提交主题等） | `Segoe UI` | `Segoe UI`（继承宿主 `--dsw-font-family`，未变） |
 
 同时新增回归测试 `monospace text asks for real code fonts before the generic keyword`：断言每条 mono 规则都以 `var(--dsh-font-mono,` 开头、含 `Consolas` 与 `'Cascadia Mono'`、命名字体位于 `ui-monospace` 之前、且以泛型 `monospace)` 收尾。
+
+## 12. 顶部芯片点击无响应（0.4.2）
+
+现象：桌面端会话顶部栏里的 Git 分支芯片，点击没有任何反应（网页版正常）。
+
+根因：DSH 桌面外壳在 Windows 上给窗口顶部画了一条拖拽区（见 `app.asar` 中的样式）：
+
+```css
+[data-windows-titlebar] .frame:before{
+  height: var(--dsh-windows-titlebar-height);
+  -webkit-app-region: drag;   /* 拖拽区会吞掉点击事件 */
+  position: absolute; inset: 0 0 auto;
+}
+```
+
+Electron 的拖拽区不派发鼠标事件；芯片所在位置正好落在这条带子里，所以 `onClick` 从未执行。网页版不存在 `[data-windows-titlebar]`，因此浏览器里复现不出来（已实测 0.4.1 网页版点击正常）。
+
+修正：让芯片与其弹层显式退出拖拽区（外壳自己也对顶栏控件这么处理）：
+
+```css
+.dg-chip-root{...-webkit-app-region:no-drag;app-region:no-drag}
+.dg-pop{...-webkit-app-region:no-drag;app-region:no-drag}
+```
+
+验证：
+
+- 回归测试 `the header chip and its popover opt out of the window drag region`（断言两条规则都带 `no-drag`）；
+- 0.4.2 在真实实例中点击芯片 → `aria-expanded=true`、弹层出现且内容为「当前分支 / main / origin/main / 切换分支 …」。
