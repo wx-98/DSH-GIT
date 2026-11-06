@@ -1585,6 +1585,21 @@ const TRUNCATED_LANES_COMMITS = (function () {
 // 9. Group 3: chip typography and branch management
 // ---------------------------------------------------------------------------
 
+test("the branch panel stays mounted so opening needs no fetch", () => {
+  // Mounting on click made the panel appear empty for a frame while /git/branches
+  // resolved. The panel is now always mounted and only its visibility toggles, so
+  // the first frame after the click already carries the branch data.
+  assert.ok(SOURCE.includes("open: open"), "the chip must pass its open state to the panel");
+  assert.ok(
+    SOURCE.includes("props.open !== false"),
+    "the panel must treat open as a visibility flag, not a mount condition",
+  );
+  assert.ok(
+    SOURCE.includes("if (!wantsOpenRefresh) return;"),
+    "a mounted panel must refresh when it is shown again",
+  );
+});
+
 test("the popover opens before paint and survives its own scrollbar", () => {
   // [popover] is display:none until showPopover() runs, so a passive effect makes
   // the panel flash in a frame late; the layout effect runs before paint.

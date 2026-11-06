@@ -2822,6 +2822,12 @@ function computeLanes(commits, options = {}) {
       React.useEffect(function () {
         loadBranches();
       }, [loadBranches]);
+      // Already-mounted content must not go stale: refresh whenever it is shown.
+      const wantsOpenRefresh = props.open !== false;
+      React.useEffect(function () {
+        if (!wantsOpenRefresh) return;
+        loadBranches();
+      }, [wantsOpenRefresh, loadBranches]);
 
       React.useEffect(function () {
         if (notice === null) return undefined;
@@ -3158,8 +3164,10 @@ function computeLanes(commits, options = {}) {
       // stacking context while staying inside the React tree (no portal needed).
       // Without the Popover API the CSS positioning is the fallback.
       const popRef = React.useRef(null);
-      // useLayoutEffect, not useEffect: [popover] is display:none until showPopover()
-      // runs, so doing it after paint makes the panel flash in a frame late.
+      // The panel stays mounted while closed, so its content is already rendered
+      // when the chip is clicked; only visibility toggles. useLayoutEffect (not
+      // useEffect) keeps the toggle ahead of paint, so there is no late flash.
+      const wantsOpen = props.open !== false;
       React.useLayoutEffect(function () {
         const node = popRef.current;
         if (node === null || typeof node.showPopover !== "function") return undefined;
@@ -3167,7 +3175,8 @@ function computeLanes(commits, options = {}) {
           return typeof node.matches === "function" && node.matches(":popover-open");
         };
         try {
-          if (!isOpen()) node.showPopover();
+          if (wantsOpen && !isOpen()) node.showPopover();
+          if (!wantsOpen && isOpen()) node.hidePopover();
         } catch (error) {
           return undefined;
         }
@@ -3178,7 +3187,7 @@ function computeLanes(commits, options = {}) {
             /* the element is already leaving the document */
           }
         };
-      }, []);
+      }, [wantsOpen]);
       return h("div", {
         className: "dg-pop dg-branch-panel" + (popoverStyle === null ? "" : " dg-pop-fixed"),
         popover: "manual",
@@ -3256,26 +3265,6 @@ function computeLanes(commits, options = {}) {
         load();
       }, [load]);
 
-      // Warm the roster while the chip is idle so the popover opens populated
-      // instead of filling in after its own request resolves.
-      const rosterRef = React.useRef(null);
-      const rosterTick = React.useState(0);
-      const bumpRoster = rosterTick[1];
-      React.useEffect(function () {
-        if (root === null) return undefined;
-        let cancelled = false;
-        api.branches(root).then(function (payload) {
-          if (cancelled) return;
-          rosterRef.current = payload !== null && typeof payload === "object" ? payload : null;
-          bumpRoster(function (tick) { return tick + 1; });
-        }, function () {
-          if (cancelled) return;
-          rosterRef.current = null;
-        });
-        return function () {
-          cancelled = true;
-        };
-      }, [root, load]);
 
       React.useEffect(function () {
         if (root === null) return undefined;
@@ -3335,16 +3324,16 @@ function computeLanes(commits, options = {}) {
         count: changeCount,
       });
 
-      const popover = open
-        ? h(BranchPanel, {
-          root: root,
-          status: status,
-          t: t,
-          onChanged: load,
-          initialBranches: rosterRef.current,
-          popoverStyle: popoverFixedStyle(anchor, typeof window === "undefined" ? 0 : window.innerWidth),
-        })
-        : null;
+      // Mounted permanently: opening only toggles visibility, so the first frame
+      // after the click already has the branch data (nothing loads on click).
+      const popover = h(BranchPanel, {
+        root: root,
+        status: status,
+        t: t,
+        onChanged: load,
+        open: open,
+        popoverStyle: popoverFixedStyle(anchor, typeof window === "undefined" ? 0 : window.innerWidth),
+      });
 
       return h("div", { className: "dg-chip-root", ref: rootRef },
         h("button", {
